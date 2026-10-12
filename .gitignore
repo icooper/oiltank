@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# oiltank runtime state (mounted into the container; never commit)
+/config/
+/data/

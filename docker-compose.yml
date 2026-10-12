@@ -1,0 +1,52 @@
+# Oil tank level reader.
+#
+# Before the first start:
+#   mkdir -p config data && sudo chown 65532:65532 data
+#   cp config.example.yaml config/config.yaml   # then edit it (config.example.yaml lands in M5)
+#   echo 'OILTANK__MQTT__PASSWORD=...' > .env     # secrets go in .env, not in config.yaml
+#
+# Note: the long-running `run` command and `healthcheck` arrive in milestone M5. Until then, use
+# one-off commands, e.g.:
+#   docker compose run --rm oiltank read --image /data/frame.jpg
+
+services:
+  oiltank:
+    build: .
+    image: oiltank:latest
+    container_name: oiltank
+    command: ["run"]
+    restart: unless-stopped
+
+    # Rootless + locked down: distroless nonroot user, read-only root FS, no capabilities.
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    volumes:
+      - ./config:/config:ro # config.yaml (read-only)
+      - ./data:/data # calibration.yaml, oiltank.db, archive/ (must be owned by 65532)
+
+    env_file:
+      - path: .env
+        required: false
+
+    environment:
+      TZ: ${TZ:-UTC}
+
+    # healthcheck:            # enabled in M5, once `oiltank healthcheck` exists
+    #   test: ["CMD", "/app/.venv/bin/oiltank", "healthcheck"]
+    #   interval: 60s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 30s
+
+    # GPU inference (post-MVP): build the GPU image variant and uncomment.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]

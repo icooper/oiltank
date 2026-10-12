@@ -1,0 +1,85 @@
+# CLAUDE.md
+
+## Git: never mutate
+
+**Claude must never make commits or run any git operation that changes state.** That includes
+`commit`, `add`, `stash`, `checkout`/`switch`, `reset`, `restore`, `rebase`, `merge`, `cherry-pick`,
+`tag`, `branch` create/delete, `push`, `pull` and `fetch`. Every mutating git operation is done by
+the human. Read-only commands (`status`, `diff`, `log`, `show`, `blame`) are fine. When a piece of
+work is ready, say so, summarize the changes, and suggest a commit message, but don't run it. Avoid
+tools that write to git implicitly (e.g. use `uv init --vcs none`).
+
+## What this is
+
+A containerized service that fetches 4K JPEG frames of a heating-oil tank's float gauge from go2rtc
+(`/api/frame.jpeg?src=<stream>`), finds the gauge's indicator disc with classical CV, converts its
+position to a fill level, and publishes it to Home Assistant through MQTT discovery. The camera is
+always in IR mode, so frames are grayscale. The design leaves room to swap in an ONNX model on
+CUDA later through config.
+
+## Commands
+
+Always go through `uv`. Never use `pip`, a bare `python`, or a hand-made venv.
+
+```sh
+uv sync                                  # create/refresh .venv from uv.lock
+uv run pytest                            # unit + CV tests (integration tests are excluded)
+uv run pytest -m integration             # needs Docker
+uv run ruff format . && uv run ruff check .
+uv run mypy                              # strict; covers src/ and tests/
+uv run oiltank --help                    # the CLI
+uv run oiltank read --image samples/frame0.jpg
+uv add <pkg> / uv add --dev <pkg>        # dependencies; commit uv.lock alongside pyproject.toml
+docker build -t oiltank:dev .            # distroless runtime image (docker-compose.yml for deploys)
+docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev read --image /samples/frame0.jpg
+```
+
+Python is **3.14** (`.python-version`, `requires-python`). Don't lower it to work around a missing
+wheel; flag the problem instead.
+
+## Architecture
+
+Pipeline: **source → align → rectify → reader → calibration → filter → publish**.
+
+- `sources/`: `FrameSource.grab(n, spacing_s) -> list[Frame]`. The HTTP source talks to go2rtc,
+  and `files.py` loads images from disk.
+- `geometry.py`: aligns each frame to an anchor patch of static parts (to tolerate camera bumps)
+  and rectifies the gauge axis into an upright strip.
+- `readers/`: `GaugeReader.read(strip) -> Reading`. **Readers return the gauge position `t` in
+  [0, 1], never a level.** `calibration.py` maps `t` to a fill fraction, which lets you recalibrate
+  without re-reading frames. Both the classical reader and the future ONNX reader produce a per-row
+  score over the same strip and share the peak-finding and confidence code. **The ONNX import stays
+  lazy**, so the CPU image never ships onnxruntime.
+- `pipeline.py` and `publish/discovery.py` are **pure**: no I/O, easy to test.
+- `publish/mqtt.py`: paho-mqtt 2.x. **CV never runs in paho callbacks**; callbacks only put
+  requests on a queue that `service.py` handles.
+- `model.py`: the typed, frozen dataclasses passed between stages.
+
+Not every module exists yet; the README's roadmap and the milestone list track progress.
+
+## Conventions
+
+- Strict typing (mypy strict). Prefer frozen dataclasses, and `pathlib` over `os.path`.
+- Config comes from pydantic-settings: a YAML file with env overrides of the form
+  `OILTANK__SECTION__KEY` (e.g. `OILTANK__MQTT__PASSWORD`).
+- Adding or changing an HA entity means editing `publish/discovery.py` and updating its golden JSON
+  test.
+- `opencv-python-headless` is OpenCV **5.x**. `cv2` returns loosely typed `MatLike`; convert with
+  `np.asarray(x, dtype=...)` at module boundaries.
+
+## Testing
+
+- Golden images are `samples/frame0.jpg` … `frame5.jpg`: native 3840×2160 go2rtc frames with the
+  tank near full. The disc's centre is at **y ≈ 1048 ± 4** in all six, and they agree within ~2 px.
+  The gauge axis runs roughly from (2162, 1000) to (2162, 1172).
+- Synthetic CV tests are built from the sample strip: moving the disc, adding noise, JPEG
+  re-encoding, frame shifts, and removing the disc.
+- Integration tests are marked `integration` and need Docker (mosquitto).
+
+## Don'ts
+
+- Never put secrets, camera or go2rtc URLs with credentials, or `/data` contents in files meant for
+  the repo.
+- Keep sample and test images small and few.
+- The container must stay distroless and non-root (uid 65532), and must work with a read-only root
+  filesystem.
