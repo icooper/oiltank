@@ -1,9 +1,9 @@
 # Oil tank level reader.
 #
 # Before the first start:
-#   docker compose pull     # the published image, for amd64 and arm64 (e.g. a Raspberry Pi)
-#   mkdir -p data && sudo chown 65532:65532 data
 #   cp .env.example .env    # then fill it in: camera URL, MQTT broker, ... (git-ignored)
+#   mkdir -p data && sudo chown 65532:65532 data
+#   docker compose pull     # the published image, for amd64 and arm64 (e.g. a Raspberry Pi)
 #   docker compose run --rm oiltank calibrate init --camera --top X Y --bottom X Y   # see README
 #
 # Then `docker compose up -d`. One-off commands run alongside, e.g.:

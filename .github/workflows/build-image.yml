@@ -184,12 +184,13 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         env:
           VERSION: ${{ inputs.version }}
+          META: ${{ steps.meta.outputs.json }}
         run: |
           args=()
           while IFS= read -r tag; do args+=(--tag "$tag"); done \
-            < <(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
+            < <(jq -r '.tags[]' <<<"$META")
           while IFS= read -r annotation; do args+=(--annotation "$annotation"); done \
-            < <(jq -r '.annotations[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
+            < <(jq -r '.annotations[]' <<<"$META")
           for digest in *; do args+=("$IMAGE@sha256:$digest"); done
           docker buildx imagetools create "${args[@]}"
           docker buildx imagetools inspect "$IMAGE:$VERSION"

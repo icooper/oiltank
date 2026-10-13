@@ -122,12 +122,13 @@ curl -fsSLO https://raw.githubusercontent.com/icooper/oiltank/main/docker-compos
 curl -fsSLO https://raw.githubusercontent.com/icooper/oiltank/main/.env.example
 ```
 
-Then pull the image (`ghcr.io/icooper/oiltank`, for amd64 or arm64) and check the camera:
+Then create `.env`, pull the image (`ghcr.io/icooper/oiltank`, for amd64 or arm64) and check the
+camera:
 
 ```sh
-docker compose pull
-mkdir -p data && sudo chown 65532:65532 data
 cp .env.example .env                       # then fill in the camera URL, MQTT broker, ...
+mkdir -p data && sudo chown 65532:65532 data
+docker compose pull
 alias oiltank='docker compose run --rm oiltank'
 oiltank grab --out /data/frame.jpg         # check the camera: a full-size frame in ./data
 ```
