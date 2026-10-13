@@ -112,14 +112,22 @@ flowchart LR
   last and atomically, and beyond the size cap whole records go oldest first (JSON first, down to
   `EVICT_TO`). So a record whose JSON exists has all its files. `oiltank capture` writes the same
   format to `data/captures/` with no cap.
-- `service.py`: one thread. It waits on the event queue (`READ_NOW`, `HA_ONLINE`, `CONNECTED`,
-  `STOP`) or the next interval, then runs a cycle: grab → measure → filter → store → publish. It
-  writes `data/heartbeat` at least every 30 s for `oiltank healthcheck`. `cli/service.py` installs
-  SIGTERM/SIGINT handlers: as PID 1 in a container, Python ignores SIGTERM without one.
+- `service.py`: one thread. It waits on the event queue (`events.py`: `READ_NOW`, `HA_ONLINE`,
+  `CONNECTED`, `STOP`, `CALL`) or the next interval, then runs a cycle: grab → measure → filter →
+  store → publish. It writes `data/heartbeat` at least every 30 s for `oiltank healthcheck`.
+  `cli/service.py` installs SIGTERM/SIGINT handlers: as PID 1 in a container, Python ignores
+  SIGTERM without one.
+  - **Other threads never change the service's state.** They read `Service.snapshot`, a frozen
+    `Snapshot` that is replaced whole.
+  - Changes go through `Service.call(fn)`, which runs `fn` on the service thread between
+    readings. A call that times out never runs.
+  - `apply_calibration` saves a calibration (refusing a stale ETag), reloads it, replays history
+    and publishes.
 - `publish/mqtt.py`: paho-mqtt 2.x. `MqttLink` sets a last will (`offline`). On every (re)connect
   it subscribes and announces `online` and discovery. **CV never runs in paho callbacks**:
-  callbacks do only cheap MQTT work and put `Event`s (`READ_NOW`, `HA_ONLINE`, `CONNECTED`) on a
-  queue that the main loop handles (`service.py`, or `cli/mqtt.py` for publishing by hand).
+  callbacks do only cheap MQTT work and put `Event`s (`events.py`: `READ_NOW`, `HA_ONLINE`,
+  `CONNECTED`) on a queue that the main loop handles (`service.py`, or `cli/mqtt.py` for
+  publishing by hand).
 - `model.py`: the typed, frozen dataclasses passed between stages.
 
 ## CI and releases

@@ -4,6 +4,7 @@ A calibration is a YAML file plus a reference frame (the image the anchor patch 
 reference path in the YAML is resolved relative to the YAML file's directory.
 """
 
+import hashlib
 import itertools
 from pathlib import Path
 from typing import Annotated, Any, Self
@@ -28,6 +29,17 @@ class CalibrationError(ValueError):
 
 class ResolutionMismatch(CalibrationError):  # noqa: N818 - reads better than ...Error here
     """A frame's size differs from the size the calibration was made at."""
+
+
+def calibration_etag(path: Path) -> str:
+    """A tag for the calibration file's exact contents: it changes whenever the file does.
+
+    Raises CalibrationError if the file can't be read.
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as e:
+        raise CalibrationError(f"cannot read calibration {path}: {e}") from e
 
 
 class _Model(BaseModel):

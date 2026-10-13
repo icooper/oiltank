@@ -5,6 +5,7 @@ import queue
 import shutil
 import threading
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,14 +16,20 @@ import pytest
 
 from oiltank.archive import Archive, ArchivePolicy
 from oiltank.calibrate import shifted
-from oiltank.calibration import Calibration, CalibrationPoint
+from oiltank.calibration import Calibration, CalibrationError, CalibrationPoint, calibration_etag
 from oiltank.config import Settings
 from oiltank.epochs import Change
+from oiltank.events import Event, EventKind
 from oiltank.history import History
 from oiltank.model import Frame, LevelState, Problem
 from oiltank.publish.discovery import Topics
-from oiltank.publish.mqtt import Event, EventKind, MqttError
-from oiltank.service import Service
+from oiltank.publish.mqtt import MqttError
+from oiltank.service import (
+    CalibrationConflictError,
+    Service,
+    ServiceBusyError,
+    ServiceStoppedError,
+)
 from oiltank.sources.base import CameraError
 from tests.conftest import SAMPLES
 from tests.cv import synth
@@ -35,9 +42,11 @@ class ScriptedCamera:
     frames: list[Frame]
     fail: bool = False
     calls: int = 0
+    delay: float = 0.0
 
     def grab(self, n: int, spacing_s: float) -> list[Frame]:
         self.calls += 1
+        threading.Event().wait(self.delay)
         if self.fail:
             raise CameraError("go2rtc:1984 didn't answer within 15 s")
         start = (self.calls - 1) * n
@@ -302,6 +311,113 @@ def test_run_loop(rig: Rig, settings: Settings, camera: ScriptedCamera) -> None:
     assert rig.publisher.calls[0] == "start"
     assert rig.publisher.calls[-1] == "stop"
     assert camera.calls == 2  # the 15-minute interval never came round
+
+
+@contextmanager
+def running(rig: Rig) -> Iterator[threading.Thread]:
+    """The service loop, on its own thread."""
+    stop = threading.Event()
+    thread = threading.Thread(target=rig.service.run, args=(stop,), daemon=True)
+    thread.start()
+    try:
+        yield thread
+    finally:
+        stop.set()
+        rig.events.put(Event(EventKind.STOP))
+        thread.join(timeout=10)
+    assert not thread.is_alive()
+
+
+def test_calls_run_on_the_service_thread_between_readings(rig: Rig, camera: ScriptedCamera) -> None:
+    camera.delay = 0.5
+    with running(rig) as thread:
+        _wait(lambda: rig.service.snapshot.reading)  # the first reading is under way
+        seen = rig.service.call(
+            lambda s: (threading.current_thread(), rig.history.count(), s.snapshot.reading)
+        )
+        assert rig.service.snapshot.next_reading is not None
+    assert seen == (thread, 1, False)  # it waited for the reading to finish
+
+
+def test_a_call_that_times_out_never_runs(rig: Rig, camera: ScriptedCamera) -> None:
+    camera.delay = 1.0
+    ran: list[str] = []
+    with running(rig):
+        _wait(lambda: rig.service.snapshot.reading)
+        with pytest.raises(ServiceBusyError):
+            rig.service.call(lambda s: ran.append("late"), timeout=0.1)
+        assert rig.service.call(lambda s: "next") == "next"  # queued behind the abandoned one
+    assert ran == []
+
+
+def test_calls_fail_when_the_service_stops(rig: Rig, camera: ScriptedCamera) -> None:
+    camera.delay = 0.5
+    stop = threading.Event()
+    thread = threading.Thread(target=rig.service.run, args=(stop,), daemon=True)
+    thread.start()
+    _wait(lambda: rig.service.snapshot.reading)
+    rig.events.put(Event(EventKind.STOP))  # handled before the call below
+    with pytest.raises(ServiceStoppedError):
+        rig.service.call(lambda s: None, timeout=10)
+    thread.join(timeout=10)
+    with pytest.raises(ServiceStoppedError):
+        rig.service.call(lambda s: None)  # straight away, once it has stopped
+
+
+def test_errors_in_calls_reach_the_caller(rig: Rig) -> None:
+    with running(rig), pytest.raises(ZeroDivisionError):
+        rig.service.call(lambda s: 1 / 0)
+
+
+def test_snapshot_follows_readings(rig: Rig, settings: Settings) -> None:
+    before = rig.service.snapshot
+    assert before.state is None and before.image is None and not before.reading
+    state = rig.service.cycle()
+    after = rig.service.snapshot
+    assert after.state == state
+    assert after.image == rig.publisher.images[-1]
+    assert after.calibration_etag == calibration_etag(settings.calibration_path)
+    assert after.mqtt_connected and not after.reading
+
+
+def test_apply_calibration_switches_at_once(rig: Rig, settings: Settings) -> None:
+    first = rig.service.cycle()
+    snap = rig.service.snapshot
+    at = snap.calibration.points[0].at
+    edited = snap.calibration.updated(points=[CalibrationPoint(at=at, fraction=0.9)])
+    with pytest.raises(CalibrationConflictError):
+        rig.service.apply_calibration(edited, if_match="not the file's tag")
+    published = len(rig.publisher.states)
+    after = rig.service.apply_calibration(edited, if_match=snap.calibration_etag)
+    assert Calibration.load(settings.calibration_path).points[0].fraction == 0.9
+    assert after.calibration.points[0].fraction == 0.9
+    assert after.calibration_etag == calibration_etag(settings.calibration_path)
+    assert first.fraction is not None and after.state is not None
+    assert after.state.fraction == pytest.approx(first.fraction * 0.9 / 0.98, abs=0.01)
+    assert rig.publisher.states[published:] == [after.state]  # published straight away
+
+
+def test_apply_calibration_refuses_a_stale_edit(rig: Rig, settings: Settings) -> None:
+    snap = rig.service.snapshot
+    at = snap.calibration.points[0].at
+    # Someone runs `oiltank calibrate point` after the edit was started.
+    snap.calibration.updated(points=[CalibrationPoint(at=at, fraction=0.95)]).save(
+        settings.calibration_path
+    )
+    edited = snap.calibration.updated(points=[CalibrationPoint(at=at, fraction=0.9)])
+    with pytest.raises(CalibrationConflictError) as conflict:
+        rig.service.apply_calibration(edited, if_match=snap.calibration_etag)
+    assert conflict.value.etag == calibration_etag(settings.calibration_path)
+    assert Calibration.load(settings.calibration_path).points[0].fraction == 0.95
+
+
+def test_apply_calibration_needs_a_usable_reference(rig: Rig, settings: Settings) -> None:
+    snap = rig.service.snapshot
+    before = settings.calibration_path.read_bytes()
+    missing = snap.calibration.updated(reference_image=Path("missing.jpg"))
+    with pytest.raises(CalibrationError, match="reference frame"):
+        rig.service.apply_calibration(missing, if_match=snap.calibration_etag)
+    assert settings.calibration_path.read_bytes() == before  # nothing saved
 
 
 def _wait(condition: Callable[[], bool], timeout: float = 20.0) -> None:

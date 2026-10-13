@@ -21,9 +21,10 @@ from oiltank.cli.common import (
     load_settings,
     validation_message,
 )
+from oiltank.events import Event, EventKind
 from oiltank.filter import FilterParams, LevelFilter
 from oiltank.history import History
-from oiltank.publish.mqtt import Event, EventKind, MqttError, MqttLink
+from oiltank.publish.mqtt import MqttError, MqttLink
 from oiltank.service import HEALTHY_AGE_S, Service
 from oiltank.sources.base import CameraConfigError
 from oiltank.sources.http import HttpSource

@@ -1,16 +1,15 @@
 """The MQTT connection to Home Assistant's broker (paho-mqtt 2.x).
 
 paho runs its network loop in a background thread and calls back from it. The callbacks here do
-only cheap MQTT work (subscribe, announce availability and discovery) and put an :class:`Event` on
-a queue. Reading the gauge, which is slow CV work, happens in whoever consumes that queue.
+only cheap MQTT work (subscribe, announce availability and discovery) and put an
+:class:`~oiltank.events.Event` on a queue. Reading the gauge, which is slow CV work, happens in
+whoever consumes that queue.
 """
 
 import json
 import logging
 import queue
 import threading
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
 import paho.mqtt.client as mqtt
@@ -18,6 +17,7 @@ from paho.mqtt.enums import CallbackAPIVersion, MQTTErrorCode
 from paho.mqtt.reasoncodes import ReasonCode
 
 from oiltank.config import Settings
+from oiltank.events import Event, EventKind
 from oiltank.model import LevelState
 from oiltank.publish.discovery import (
     OFFLINE,
@@ -36,21 +36,6 @@ PUBLISH_TIMEOUT_S = 10.0
 
 class MqttError(Exception):
     """Couldn't connect to, or publish through, the broker."""
-
-
-class EventKind(StrEnum):
-    CONNECTED = "connected"
-    HA_ONLINE = "ha_online"
-    """Home Assistant (re)started: republish discovery and state."""
-    READ_NOW = "read_now"
-    """The Read now button was pressed."""
-    STOP = "stop"
-    """Not from MQTT: the process was asked to stop (SIGTERM), so the loop should wake and end."""
-
-
-@dataclass(frozen=True, slots=True)
-class Event:
-    kind: EventKind
 
 
 class MqttLink:

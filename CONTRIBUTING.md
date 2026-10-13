@@ -57,7 +57,7 @@ The code is in `src/oiltank/`:
 | `filter.py`, `history.py`, `archive.py` | Filtering and derived values (pure), SQLite history, the frame archive |
 | `epochs.py` | Which axis a stored gauge position was measured along, and mapping it onto the current one (pure) |
 | `publish/` | Home Assistant discovery and state (pure), and the MQTT connection |
-| `service.py` | The service loop |
+| `service.py`, `events.py` | The service loop, the events that wake it, and calls into it from other threads |
 | `annotate.py` | The gauge, diagnostic and grid images |
 | `config.py`, `model.py`, `cli/` | Settings, shared data types, the command line |
 
