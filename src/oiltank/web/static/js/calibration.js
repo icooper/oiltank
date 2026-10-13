@@ -143,9 +143,16 @@ export class CalibrationView {
 export function wireDraftBar() {
   const bar = document.getElementById("draft-bar");
   const message = document.getElementById("draft-message");
+  // The bar is fixed to the bottom of the window; room is kept under the page for it, so it
+  // never covers the end of the content (its height changes as it wraps on narrow screens).
+  const makeRoom = () => {
+    document.body.style.paddingBottom = bar.hidden ? "" : `${bar.offsetHeight}px`;
+  };
+  new ResizeObserver(makeRoom).observe(bar);
   const update = () => {
     bar.hidden = !draft.dirty || draft.readOnly;
     if (bar.hidden) message.textContent = "";
+    makeRoom();
   };
   draft.addEventListener("change", update);
   document.getElementById("draft-discard").addEventListener("click", () => draft.discard());

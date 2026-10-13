@@ -207,7 +207,7 @@ button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --mark: #f6c35b; } }
 :root[data-theme="dark"] { --mark: #f6c35b; }
 
-.tabs { display: flex; gap: 4px; margin-right: auto; margin-left: 16px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-right: auto; margin-left: 16px; min-width: 0; }
 .tabs a {
   padding: 4px 12px;
   border-radius: 8px;
@@ -312,7 +312,8 @@ a { color: var(--accent); }
 .points th { text-align: left; font-size: 0.8rem; color: var(--muted); font-weight: 600; padding: 4px 8px 4px 0; }
 .points td { padding: 6px 8px 6px 0; border-top: 1px solid var(--border); vertical-align: middle; }
 .points input[type="number"] { width: 5.5em; }
-.points input[type="text"] { width: 100%; min-width: 10em; }
+.points td:first-child { white-space: nowrap; }
+.points input[type="text"] { width: 100%; min-width: 0; }
 
 input[type="number"], input[type="text"] {
   font: inherit;
@@ -325,7 +326,8 @@ input[type="number"], input[type="text"] {
 input:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
 
 .row-form { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: end; margin-bottom: 8px; }
-.row-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+.row-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); min-width: 0; max-width: 100%; }
+.row-form select { max-width: 100%; }
 .with-unit { display: inline-flex; align-items: center; gap: 6px; }
 .row-form input[type="number"] { width: 7em; }
 
@@ -336,8 +338,11 @@ input:focus-visible, select:focus-visible { outline: 3px solid var(--accent); ou
 .point-form p { margin: 0; font-size: 0.85rem; }
 
 .draft-bar {
-  position: sticky;
+  position: fixed;
+  left: 0;
+  right: 0;
   bottom: 0;
+  z-index: 10;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -406,3 +411,11 @@ body.embedded .point-form, body.embedded .draft-bar { display: none; }
   font-size: 0.9rem;
 }
 .g-state[data-changed="true"] { border-color: var(--warn); }
+
+/* ---- phones --------------------------------------------------------------------------------- */
+
+@media (max-width: 520px) {
+  .tabs { margin-left: 0; }
+  .tabs a { padding: 4px 8px; }
+  .points th:nth-child(2), .points td:nth-child(2) { display: none; } /* the position */
+}
