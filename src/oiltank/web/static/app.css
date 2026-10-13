@@ -393,3 +393,16 @@ body.embedded .point-form, body.embedded .draft-bar { display: none; }
   .gauge-layout { grid-template-columns: minmax(0, 1fr); }
   .stage { height: 420px; }
 }
+
+.g-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+.g-state[data-changed="true"] { border-color: var(--warn); }

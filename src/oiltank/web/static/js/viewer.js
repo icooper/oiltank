@@ -17,6 +17,7 @@ export class Viewer extends EventTarget {
     this.editable = editable;
     this.view = new View(0.25, 0, 0);
     this.geometry = null;
+    this.saved = null; // the saved geometry, drawn faintly under a changed one
     this.result = null; // the last check of the draft on this frame
     this.url = null;
     this.width = 0;
@@ -39,6 +40,11 @@ export class Viewer extends EventTarget {
 
   setGeometry(geometry) {
     this.geometry = geometry;
+    this.render();
+  }
+
+  setSaved(geometry) {
+    this.saved = geometry;
     this.render();
   }
 
@@ -106,6 +112,28 @@ export class Viewer extends EventTarget {
     const at = (p) => this.view.toScreen([p[0] + sx, p[1] + sy]);
     const g = this.geometry;
     ctx.lineWidth = 1.5;
+
+    // The saved geometry, faintly, to compare a try-out with.
+    if (this.saved) {
+      ctx.save();
+      ctx.beginPath();
+      stripOutline(this.saved.axis).forEach((p, i) => (i ? ctx.lineTo(...at(p)) : ctx.moveTo(...at(p))));
+      ctx.closePath();
+      ctx.moveTo(...at(this.saved.axis.top));
+      ctx.lineTo(...at(this.saved.axis.bottom));
+      const [x, y, w, h] = this.saved.anchor.rect;
+      const [ax, ay] = at([x, y]);
+      ctx.rect(ax, ay, w * this.view.scale, h * this.view.scale);
+      // Light dots on a dark halo: visible over both bright and dark parts of the frame.
+      ctx.strokeStyle = "rgb(0 0 0 / 0.45)";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.strokeStyle = "rgb(255 255 255 / 0.85)";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([3, 4]);
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // The strip the reader looks in, and the axis the disc travels.
     ctx.strokeStyle = c.mark;

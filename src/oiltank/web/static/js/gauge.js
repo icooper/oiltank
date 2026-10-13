@@ -4,7 +4,7 @@
 
 import { getJSON, postJSON } from "./api.js";
 import { colors } from "./canvas.js";
-import { draft } from "./draft.js";
+import { draft, geometryOf } from "./draft.js";
 import { reason } from "./format.js";
 import { drawHeatmap } from "./heatmap.js";
 import { Viewer } from "./viewer.js";
@@ -32,6 +32,12 @@ const INPUTS = {
   "g-min-score": [(g) => g.anchor.min_score, (g, v) => ({ anchor: { ...g.anchor, min_score: v } })],
 };
 
+/** A reading, in words: "reads 98.2% (position 0.820, confidence 1.00)". */
+function readingText(r) {
+  if (!r.ok) return `no reading (${reason(r.problem)}).`;
+  return `reads ${r.level.toFixed(1)}% (position ${r.t.toFixed(3)}, confidence ${r.confidence.toFixed(2)}).`;
+}
+
 const when = (iso) =>
   new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
@@ -53,6 +59,7 @@ export class GaugeView {
     this.generation = 0;
     this.fitted = false;
     this.rebaseResult = null;
+    this.savedChecks = new Map(); // frame + saved calibration -> its check, to compare against
     this.wire();
   }
 
@@ -72,6 +79,7 @@ export class GaugeView {
     this.q("#g-scan").addEventListener("click", () => this.scan());
     this.q("#g-rebase-find").addEventListener("click", () => this.findShift());
     this.q("#g-rebase-save").addEventListener("click", () => this.saveRebase());
+    this.q("#g-reset").addEventListener("click", () => draft.setGeometry(geometryOf(draft.calibration)));
     this.q("#g-form").addEventListener("submit", (e) => e.preventDefault()); // Enter applies a field
     for (const [id, [, change]] of Object.entries(INPUTS)) {
       this.q(`#${id}`).addEventListener("change", (e) => {
@@ -82,6 +90,7 @@ export class GaugeView {
     draft.addEventListener("change", () => {
       if (this.root.hidden || !draft.geometry) return;
       if (!this.dragging) this.viewer.setGeometry(draft.geometry);
+      this.showState();
       this.fillInputs();
       this.scheduleCheck();
     });
@@ -103,6 +112,7 @@ export class GaugeView {
     for (const input of this.root.querySelectorAll("#g-form input")) input.disabled = readOnly;
     this.q("#g-rebase-save").hidden = true;
     this.viewer.setGeometry(draft.geometry);
+    this.showState();
     this.fillInputs();
     this.layout();
     await this.loadFrames();
@@ -120,6 +130,23 @@ export class GaugeView {
 
   fit() {
     if (draft.geometry) this.viewer.fit(this.viewer.gaugeRect());
+  }
+
+  /** Say whether this is the saved geometry or a try-out, and draw the saved one faintly under
+   * changes to compare. */
+  showState() {
+    const changed = draft.geometryChanged;
+    let text;
+    if (draft.readOnly) text = "This web UI is read-only: it shows the saved calibration.";
+    else if (changed) {
+      text = "Trying out changes: nothing is saved until you press Save at the bottom. Pick other frames to test them; the saved calibration's reading is shown alongside.";
+    } else {
+      text = "Showing the saved calibration. Drag the handles or type numbers to try changes; nothing is saved until you press Save.";
+    }
+    this.q("#g-state-text").textContent = text;
+    this.q("#g-state").dataset.changed = String(changed);
+    this.q("#g-reset").hidden = !changed;
+    this.viewer.setSaved(changed ? geometryOf(draft.calibration) : null);
   }
 
   fillInputs() {
@@ -211,28 +238,46 @@ export class GaugeView {
     if (!draft.geometry) return;
     const generation = (this.generation += 1);
     try {
-      const result = await draft.check([this.frame]);
+      const [result, saved] = await Promise.all([
+        draft.check([this.frame]),
+        draft.geometryChanged ? this.savedCheck(this.frame) : null,
+      ]);
       if (generation !== this.generation) return; // a newer check is on its way
       this.viewer.setResult(result.valid ? result : null);
-      this.showResult(result);
+      this.showResult(result, saved);
     } catch (error) {
       if (generation === this.generation) this.q("#g-result").replaceChildren(line(error.message, "bad"));
     }
   }
 
-  showResult(result) {
+  /** The saved calibration's check of `frame` (kept: it only changes when the saved one does). */
+  savedCheck(frame) {
+    const cal = draft.calibration;
+    const key = `${cal.etag}:${JSON.stringify(frame)}`;
+    if (!this.savedChecks.has(key)) {
+      const body = { points: cal.points, ...geometryOf(cal), frames: [frame] };
+      const pending = postJSON("api/calibration/check", body);
+      pending.catch(() => this.savedChecks.delete(key));
+      this.savedChecks.set(key, pending);
+    }
+    return this.savedChecks.get(key);
+  }
+
+  showResult(result, saved) {
     const out = [];
     if (!result.valid) {
       for (const e of result.errors) out.push(line(`Not a working calibration: ${e}`, "bad"));
+      if (saved && saved.valid) out.push(line(`Saved calibration: ${readingText(saved.reading)}`));
       this.q("#g-result").replaceChildren(...out);
       return;
     }
     const r = result.reading;
-    if (r.ok) {
-      const tone = r.confidence < 0.8 ? "warn" : "ok";
-      out.push(line(`Reads ${r.level.toFixed(1)}% on this frame (position ${r.t.toFixed(3)}, confidence ${r.confidence.toFixed(2)}).`, tone));
+    const tone = !r.ok ? "bad" : r.confidence < 0.8 ? "warn" : "ok";
+    if (saved && saved.valid) {
+      out.push(line(`Saved calibration: ${readingText(saved.reading)}`));
+      out.push(line(`With your changes: ${readingText(r)}`, tone));
     } else {
-      out.push(line(`No reading on this frame: ${reason(r.problem)}.`, "bad"));
+      out.push(line(`On this frame: ${readingText(r)}`, tone));
     }
     const f = r.frames[0];
     if (f && f.dx != null && (Math.abs(f.dx) >= 0.5 || Math.abs(f.dy) >= 0.5)) {
@@ -279,8 +324,9 @@ export class GaugeView {
     try {
       this.rebaseResult = await postJSON("api/calibration/rebase", { frame: this.frame });
       const { dx, dy, score } = this.rebaseResult.shift;
-      text.textContent = `The camera has moved ${dx.toFixed(1)}, ${dy.toFixed(1)} px since the reference frame (match ${score.toFixed(2)}). Making this frame the reference moves the gauge's geometry with it, and keeps your readings where they were.`;
+      text.textContent = `The camera has moved ${dx.toFixed(1)}, ${dy.toFixed(1)} px since the reference frame (match ${score.toFixed(2)}). Making this frame the reference moves the gauge's geometry with it and keeps your readings where they were. Unlike other changes here, it's saved straight away${draft.dirty ? ", so save or discard your other changes first" : ""}.`;
       this.q("#g-rebase-save").hidden = draft.readOnly;
+      this.q("#g-rebase-save").disabled = draft.dirty;
     } catch (error) {
       text.textContent = error.message;
     }

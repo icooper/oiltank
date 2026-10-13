@@ -161,6 +161,10 @@
     <p class="muted">The axis the disc travels (top of travel to bottom), the strip around it the
       reader looks in, the disc's size, and the anchor: a patch of the scene that doesn't change,
       which tells how far the camera has moved. Each change is checked against the frame shown.</p>
+    <div id="g-state" class="g-state" role="status">
+      <span id="g-state-text"></span>
+      <button type="button" class="quiet" id="g-reset" hidden>Back to saved</button>
+    </div>
     <div class="toolbar">
       <label class="group">Frame <select id="g-frame"></select></label>
       <button type="button" class="quiet" id="g-grab" hidden>Grab from the camera</button>
@@ -196,7 +200,7 @@
             reference: the gauge's geometry moves with the camera.</p>
           <button type="button" class="quiet" id="g-rebase-find">Find the camera's shift</button>
           <p id="g-rebase-text" role="status"></p>
-          <button type="button" id="g-rebase-save" hidden>Make this frame the reference</button>
+          <button type="button" id="g-rebase-save" hidden>Make this frame the reference (saves now)</button>
         </section>
       </div>
     </div>
