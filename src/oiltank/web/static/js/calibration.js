@@ -5,6 +5,7 @@ import { getJSON } from "./api.js";
 import { colors } from "./canvas.js";
 import { drawChart, PLOT } from "./chart.js";
 import { draft } from "./draft.js";
+import { onAxis } from "./geometry.js";
 import { DAY, TimeScale } from "./timescale.js";
 
 const PREVIEW_DAYS = 30;
@@ -16,6 +17,14 @@ function cell(...children) {
 }
 
 const pct = (fraction) => Math.round(fraction * 1000) / 10;
+
+/** A point's position along the draft's axis (for points changed here, which the server hasn't
+ * placed yet). */
+function positionOf(point) {
+  if (point.t != null) return point.t;
+  if (!point.at || !draft.geometry) return null;
+  return onAxis(draft.geometry.axis, point.at).t;
+}
 
 export class CalibrationView {
   constructor(root) {
@@ -63,7 +72,8 @@ export class CalibrationView {
         const note = Object.assign(document.createElement("input"), { type: "text", value: point.note || "", disabled: readOnly });
         note.setAttribute("aria-label", "Note");
         note.addEventListener("change", () => this.edit(i, { note: note.value }));
-        const where = draft.positions && draft.positions[i] != null ? `t = ${draft.positions[i].toFixed(3)}` : "";
+        const t = draft.positions && draft.positions[i] != null ? draft.positions[i] : positionOf(point);
+        const where = t == null ? "" : `t = ${t.toFixed(3)}`;
         const remove = Object.assign(document.createElement("button"), { type: "button", className: "quiet", textContent: "Remove", hidden: readOnly });
         remove.addEventListener("click", () => {
           draft.set(points.filter((_, j) => j !== i), draft.positions && draft.positions.filter((_, j) => j !== i));

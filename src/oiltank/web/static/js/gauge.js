@@ -4,7 +4,7 @@
 
 import { getJSON, postJSON } from "./api.js";
 import { colors } from "./canvas.js";
-import { draft, geometryOf } from "./draft.js";
+import { draft, geometryOf, hasEnd, setEnd } from "./draft.js";
 import { reason } from "./format.js";
 import { drawHeatmap } from "./heatmap.js";
 import { drawStrip } from "./stripview.js";
@@ -75,13 +75,14 @@ export class GaugeView {
       draft.setGeometry(e.detail);
     });
     this.viewer.addEventListener("fit", () => this.fit());
+    this.viewer.addEventListener("end", (e) => this.moveEnd(e.detail));
     this.q("#g-fit").addEventListener("click", () => this.fit());
     this.q("#g-frame").addEventListener("change", (e) => this.select(this.options[Number(e.target.value)].ref));
     this.q("#g-grab").addEventListener("click", () => this.grab());
     this.q("#g-scan").addEventListener("click", () => this.scan());
     this.q("#g-rebase-find").addEventListener("click", () => this.findShift());
     this.q("#g-rebase-save").addEventListener("click", () => this.saveRebase());
-    this.q("#g-reset").addEventListener("click", () => draft.setGeometry(geometryOf(draft.calibration)));
+    this.q("#g-reset").addEventListener("click", () => draft.discard());
     this.q("#g-form").addEventListener("submit", (e) => e.preventDefault()); // Enter applies a field
     for (const [id, [, change]] of Object.entries(INPUTS)) {
       this.q(`#${id}`).addEventListener("change", (e) => {
@@ -134,10 +135,26 @@ export class GaugeView {
     if (draft.geometry) this.viewer.fit(this.viewer.gaugeRect());
   }
 
-  /** Say whether this is the saved geometry or a try-out, and draw the saved one faintly under
-   * changes to compare. */
+  /** Set where the gauge reads full (`fraction` 1) or empty (0): a calibration point there. The
+   * other end is pinned where it is now, if it isn't a point already, so the rest of the scale
+   * stays put. */
+  moveEnd({ fraction, at }) {
+    const today = new Date().toISOString().slice(0, 10);
+    const name = fraction === 1 ? "F" : "E";
+    let points = draft.points;
+    const other = 1 - fraction;
+    const otherMark = this.viewer.endMarks().find((m) => m.fraction === other);
+    if (!hasEnd(points, other) && otherMark) {
+      points = setEnd(points, other, otherMark.at, `${today}: ${other === 1 ? "F" : "E"} kept where it was, set in the Gauge tab`);
+    }
+    points = setEnd(points, fraction, at, `${today}: ${name} set in the Gauge tab`);
+    draft.set(points);
+  }
+
+  /** Say whether this is the saved calibration or a try-out, and draw the saved geometry faintly
+   * under changes to compare. */
   showState() {
-    const changed = draft.geometryChanged;
+    const changed = draft.dirty;
     let text;
     if (draft.readOnly) text = "This web UI is read-only: it shows the saved calibration.";
     else if (changed) {
@@ -148,7 +165,7 @@ export class GaugeView {
     this.q("#g-state-text").textContent = text;
     this.q("#g-state").dataset.changed = String(changed);
     this.q("#g-reset").hidden = !changed;
-    this.viewer.setSaved(changed ? geometryOf(draft.calibration) : null);
+    this.viewer.setSaved(draft.geometryChanged ? geometryOf(draft.calibration) : null);
   }
 
   fillInputs() {
@@ -242,7 +259,7 @@ export class GaugeView {
     try {
       const [result, saved] = await Promise.all([
         draft.check([this.frame]),
-        draft.geometryChanged ? this.savedCheck(this.frame) : null,
+        draft.dirty ? this.savedCheck(this.frame) : null,
       ]);
       if (generation !== this.generation) return; // a newer check is on its way
       this.viewer.setResult(result.valid ? result : null);

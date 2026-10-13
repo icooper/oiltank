@@ -81,3 +81,14 @@ test("dragging handles", () => {
   assert.deepEqual(drag(geometry, "anchor", [1, 1]).axis, geometry.axis); // the rest unchanged
   assert.equal(drag(geometry, "nothing", [1, 1]), geometry);
 });
+
+import { onAxis } from "../../src/oiltank/web/static/js/geometry.js";
+
+test("projecting onto the axis", () => {
+  const axis = { top: [2166, 1020], bottom: [2166, 1172] };
+  const { t, at } = onAxis(axis, [2180, 1096]);
+  assert.equal(t, 0.5);
+  assert.deepEqual(at, [2166, 1096]);
+  assert.equal(onAxis(axis, [2166, 1172]).t, 0);
+  assert.ok(onAxis(axis, [2166, 1000]).t > 1);
+});

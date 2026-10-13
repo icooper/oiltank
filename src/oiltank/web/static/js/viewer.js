@@ -2,13 +2,15 @@
 // geometry over it and handles to drag. Geometry is in reference-frame pixels; on a frame the
 // camera has shifted, it's drawn moved by that shift so it sits where the gauge is.
 //
-// Events: "drag" while a handle moves and "change" when it's let go (`detail` is the geometry),
-// and "fit" on a double-click.
+// Events: "drag" while a handle moves and "change" when it's let go (`detail` is the geometry);
+// "end" when the F or E tab is dropped somewhere along the axis (`detail` is `{ fraction, at }`,
+// 1 for F, 0 for E, at in reference px); and "fit" on a double-click.
 
 import { colors, image, sized } from "./canvas.js";
-import { discAngle, drag, handles, hit, mergeLabels, stripOutline, View } from "./geometry.js";
+import { across, discAngle, drag, handles, hit, mergeLabels, onAxis, stripOutline, View } from "./geometry.js";
 
 const ANCHOR = "#d53f8c";
+const ENDS = { F: { id: "full", fraction: 1 }, E: { id: "empty", fraction: 0 } };
 
 export class Viewer extends EventTarget {
   constructor(canvas, { editable = true } = {}) {
@@ -24,6 +26,27 @@ export class Viewer extends EventTarget {
     this.height = 0;
     this.pointers = new Map();
     this.wire();
+  }
+
+  /** Where the F and E marks are (reference px), with the one being dragged where it is now. */
+  endMarks() {
+    const marks = (this.result && this.result.marks) || [];
+    const out = [];
+    for (const mark of marks) {
+      const end = ENDS[mark.label];
+      if (!end || !mark.at) continue;
+      const dragging = this.endDrag && this.endDrag.id === end.id;
+      out.push({ ...end, label: mark.label, at: dragging ? this.endDrag.at : mark.at });
+    }
+    return out;
+  }
+
+  /** The tabs to drag F and E by: at the left end of their marks, clear of the axis handles. */
+  endHandles() {
+    if (!this.geometry) return [];
+    const [nx, ny] = across(this.geometry.axis);
+    const w = this.geometry.axis.half_width;
+    return this.endMarks().map((m) => ({ id: m.id, at: [m.at[0] - w * nx, m.at[1] - w * ny] }));
   }
 
   /** The camera's shift on this frame (from the last check), which the geometry is drawn by. */
@@ -50,6 +73,7 @@ export class Viewer extends EventTarget {
 
   setResult(result) {
     this.result = result;
+    this.endDrag = null; // the check has the dropped mark where it is now
     this.render();
   }
 
@@ -149,8 +173,11 @@ export class Viewer extends EventTarget {
     ctx.lineTo(...at(g.axis.bottom));
     ctx.stroke();
 
-    // The gauge's marks along it.
-    const marks = (this.result && this.result.marks) || [];
+    // The gauge's marks along it (an F or E being dragged where it is now).
+    const dragged = this.endDrag ? this.endMarks().find((m) => m.id === this.endDrag.id) : null;
+    const marks = ((this.result && this.result.marks) || []).map((m) =>
+      dragged && m.label === dragged.label ? { ...m, at: dragged.at } : m,
+    );
     ctx.font = "12px system-ui, sans-serif";
     ctx.textBaseline = "middle";
     ctx.textAlign = "right";
@@ -167,7 +194,8 @@ export class Viewer extends EventTarget {
       placed.push({ x, y, label: mark.label });
     }
     ctx.fillStyle = c.mark;
-    const left = placed.length ? Math.min(...placed.map((m) => m.x)) - half - 4 : 0;
+    const gap = this.editable ? 14 : 4; // clear of the F and E tabs
+    const left = placed.length ? Math.min(...placed.map((m) => m.x)) - half - gap : 0;
     for (const m of mergeLabels(placed, 14)) ctx.fillText(m.label, left, m.y);
 
     // Where the reader found the disc, at the draft's disc size.
@@ -196,6 +224,21 @@ export class Viewer extends EventTarget {
     ctx.fillText("anchor", ax, ay - 3);
 
     if (!this.editable) return;
+    // Tabs to drag F and E along the axis by.
+    for (const handle of this.endHandles()) {
+      const [hx, hy] = at(handle.at);
+      ctx.fillStyle = c.mark;
+      ctx.strokeStyle = c.card;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(hx - 8, hy);
+      ctx.lineTo(hx, hy - 6);
+      ctx.lineTo(hx + 4, hy);
+      ctx.lineTo(hx, hy + 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
     for (const handle of handles(g)) {
       const [hx, hy] = at(handle.at);
       ctx.fillStyle = c.card;
@@ -231,7 +274,10 @@ export class Viewer extends EventTarget {
     };
     const shifted = () => {
       const [sx, sy] = this.shift;
-      return handles(this.geometry).map((h) => ({ id: h.id, at: [h.at[0] + sx, h.at[1] + sy] }));
+      return [...this.endHandles(), ...handles(this.geometry)].map((h) => ({
+        id: h.id,
+        at: [h.at[0] + sx, h.at[1] + sy],
+      }));
     };
     c.addEventListener("pointerdown", (e) => {
       c.setPointerCapture(e.pointerId);
@@ -242,9 +288,9 @@ export class Viewer extends EventTarget {
       }
       const at = point(e);
       const id = this.editable && this.geometry ? hit(shifted(), this.view, at) : null;
-      this.gesture = id
-        ? { kind: "handle", id, start: this.geometry, from: this.view.toImage(at) }
-        : { kind: "pan", view: this.view, from: at };
+      if (id === "full" || id === "empty") this.gesture = { kind: "end", id };
+      else if (id) this.gesture = { kind: "handle", id, start: this.geometry, from: this.view.toImage(at) };
+      else this.gesture = { kind: "pan", view: this.view, from: at };
     });
     c.addEventListener("pointermove", (e) => {
       const at = point(e);
@@ -263,6 +309,12 @@ export class Viewer extends EventTarget {
       } else if (g.kind === "pan") {
         this.view = g.view.panBy(at[0] - g.from[0], at[1] - g.from[1]);
         this.render();
+      } else if (g.kind === "end") {
+        // Along the axis only: the pointer's place projected onto it (reference px).
+        const [ix, iy] = this.view.toImage(at);
+        const [sx, sy] = this.shift;
+        this.endDrag = { id: g.id, at: onAxis(this.geometry.axis, [ix - sx, iy - sy]).at };
+        this.render();
       } else if (g.kind === "handle") {
         const [ix, iy] = this.view.toImage(at);
         this.geometry = drag(g.start, g.id, [ix - g.from[0], iy - g.from[1]]);
@@ -274,6 +326,10 @@ export class Viewer extends EventTarget {
       this.pointers.delete(e.pointerId);
       if (this.gesture && this.gesture.kind === "handle") {
         this.dispatchEvent(new CustomEvent("change", { detail: this.geometry }));
+      }
+      if (this.gesture && this.gesture.kind === "end" && this.endDrag) {
+        const fraction = this.gesture.id === "full" ? 1 : 0;
+        this.dispatchEvent(new CustomEvent("end", { detail: { fraction, at: this.endDrag.at } }));
       }
       this.gesture = null;
     };

@@ -40,3 +40,18 @@ test("geometry changes make a draft dirty too, and are sent with it", () => {
   draft.discard();
   assert.equal(draft.dirty, false);
 });
+
+import { hasEnd, setEnd } from "../../src/oiltank/web/static/js/draft.js";
+
+test("setting E and F points", () => {
+  const owner = { at: [2168, 1047.5], fraction: 0.98, note: "owner" };
+  const withF = setEnd([owner], 1, [2166.04, 1030.06], "F");
+  assert.deepEqual(withF, [owner, { at: [2166, 1030.1], fraction: 1, note: "F" }]);
+  assert.ok(hasEnd(withF, 1) && !hasEnd(withF, 0));
+  const moved = setEnd(withF, 1, [2166, 1025], "F again");
+  assert.equal(moved.length, 2);
+  assert.deepEqual(moved[1].at, [2166, 1025]);
+  const withE = setEnd(moved, 0, [2166, 1172], "E");
+  assert.deepEqual(withE.map((p) => p.fraction), [0, 0.98, 1]); // in order up the gauge
+  assert.equal(setEnd([{ t: 0.1, fraction: 0.003, note: "" }], 0, [1, 2], "E").length, 1); // the same point
+});

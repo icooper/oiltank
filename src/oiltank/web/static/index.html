@@ -121,7 +121,8 @@
     <h2 id="points-heading">Calibration points</h2>
     <p class="muted">Each point says what the gauge reads with the disc at one position; the scale
       runs straight between them. With fewer than two, the bottom of travel stands in for E (or the
-      top for F).</p>
+      top for F). To set where the gauge reads full or empty, drag F or E along the gauge in the
+      <a href="#view=gauge">Gauge</a> tab: that adds a 100% or 0% point here.</p>
     <p id="cal-read-only" class="muted" hidden>This web UI is read-only (OILTANK_WEB_READ_ONLY).</p>
     <ul id="cal-warnings" class="warnings" hidden></ul>
     <table class="points">
@@ -172,8 +173,14 @@
     </div>
     <div class="gauge-layout">
       <div class="gauge-main">
-        <div id="g-stage" class="stage"><canvas id="g-canvas"
-          aria-label="The frame, with the gauge's axis, strip, marks and anchor. Drag the handles to change them."></canvas></div>
+        <div class="g-frame">
+          <div id="g-stage" class="stage"><canvas id="g-canvas"
+            aria-label="The frame, with the gauge's axis, strip, marks and anchor. Drag the handles to change them."></canvas></div>
+          <p class="hint muted">Drag the round handles to move the axis ends or widen the strip,
+            the pink ones to move or resize the anchor, and the F and E tabs (left of their marks)
+            to set where the gauge reads full and empty. Scroll or pinch to zoom, drag elsewhere
+            to pan, double-click to fit.</p>
+        </div>
         <figure class="g-strip">
           <canvas id="g-strip" aria-label="The strip the reader gets from this frame, with its score for every row"></canvas>
           <figcaption class="muted">The strip the reader gets from this frame with these
@@ -212,9 +219,6 @@
         </section>
       </div>
     </div>
-    <p class="hint muted">Drag the round handles to move the axis ends or widen the strip, and the
-      pink ones to move or resize the anchor. Scroll or pinch to zoom, drag elsewhere to pan,
-      double-click to fit.</p>
   </section>
 </main>
 

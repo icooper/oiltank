@@ -12,6 +12,21 @@ export function samePoints(a, b) {
 }
 
 const GEOMETRY = ["axis", "disc", "anchor"];
+const SAME_POINT = 0.005; // points this close in reading are the same point (as the server has it)
+
+/** `points` with the point for reading `fraction` (0 for E, 1 for F) put `at` a position
+ * (reference px), replacing any point for the same reading. */
+export function setEnd(points, fraction, at, note) {
+  const kept = points.filter((p) => Math.abs(p.fraction - fraction) >= SAME_POINT);
+  const round = (v) => Math.round(v * 10) / 10;
+  // In order of reading, which is also their order up the gauge.
+  return [...kept, { at: at.map(round), fraction, note }].sort((a, b) => a.fraction - b.fraction);
+}
+
+/** Whether `points` set the reading `fraction` themselves (rather than leaving it to the scale). */
+export function hasEnd(points, fraction) {
+  return points.some((p) => Math.abs(p.fraction - fraction) < SAME_POINT);
+}
 
 /** The geometry part of a calibration: `{ axis, disc, anchor }`. */
 export function geometryOf(calibration) {
