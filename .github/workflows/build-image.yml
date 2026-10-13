@@ -1,0 +1,195 @@
+name: Build image # zizmor: ignore[excessive-permissions] (see below)
+
+# Builds the image natively on amd64 and arm64 runners, smoke-tests each one, and (for releases)
+# pushes them and publishes the multi-arch tags. Called by image.yml (PRs) and release.yml.
+#
+# There are deliberately no `permissions` here: jobs get exactly what the caller grants, which is
+# contents: read for PRs and also packages: write for releases. A called workflow can narrow the
+# caller's permissions but never widen them, so declaring packages: write here would force PRs to
+# grant it too.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Release version to stamp into the image, e.g. 1.2.3. Empty builds the checkout as it is."
+        type: string
+        default: ""
+      push:
+        description: "Push to GHCR and publish the multi-arch tags. The caller must grant packages: write."
+        type: boolean
+        default: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image: # zizmor: ignore[excessive-permissions] (the caller's grant)
+    name: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, platform: linux/amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.version != '' && format('v{0}', inputs.version) || '' }}
+          persist-credentials: false
+
+      # pyproject.toml holds a placeholder version; releases are tags. `uv version` rewrites the
+      # version in pyproject.toml and in uv.lock's root entry, so the Dockerfile's
+      # `uv sync --locked` still passes. Anything more in the diff means uv.lock was stale.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        if: inputs.version != ''
+        with:
+          version: "0.11.11" # same as the Dockerfile
+          enable-cache: false
+      - name: Stamp the version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          uv version "$VERSION" --no-sync
+          git diff
+          test "$(git diff --numstat)" = "$(printf '1\t1\tpyproject.toml\n1\t1\tuv.lock')"
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: type=semver,pattern={{version}},value=v${{ inputs.version }},enable=${{ inputs.version != '' }}
+          labels: |
+            org.opencontainers.image.title=oiltank
+            org.opencontainers.image.description=Reads a heating oil tank float gauge from IP camera frames and publishes the level to Home Assistant over MQTT.
+            org.opencontainers.image.licenses=MIT
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: . # the checkout (with the stamped version), not the action's default git context
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          load: true
+          tags: oiltank:ci
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,scope=image-${{ matrix.arch }},mode=max
+
+      # Runs the way docker-compose.yml does: read-only root, no capabilities, non-root.
+      - name: Smoke test
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          locked() { docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges "$@"; }
+
+          user=$(docker image inspect --format '{{.Config.User}}' oiltank:ci)
+          echo "user: $user"
+          test "$user" = "65532:65532"
+
+          version=$(locked oiltank:ci --version)
+          echo "$version"
+          if [[ -n $VERSION && $version != "oiltank $VERSION "* ]]; then
+            echo "::error::expected version $VERSION"
+            exit 1
+          fi
+
+          reading=$(locked -v "$PWD/samples:/samples:ro" oiltank:ci \
+            read -c /samples/calibration.yaml --image /samples/frame0.jpg --image /samples/frame1.jpg)
+          echo "$reading"
+          if [[ ! $reading =~ ^level\ 9[789]\.[0-9]% ]]; then
+            echo "::error::the sample frames should read about 98%"
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        if: inputs.push
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Same inputs as the tested build, so every layer comes from the local build cache.
+      - name: Push by digest
+        id: push
+        if: inputs.push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+
+      - name: Export the digest
+        if: inputs.push
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: inputs.push
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Joins the per-arch images into one multi-arch tag set: X.Y.Z, X.Y, X and latest.
+  merge: # zizmor: ignore[excessive-permissions] (the caller's grant)
+    if: inputs.push
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index # GHCR reads the description from the index
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=v${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ inputs.version }}
+            type=semver,pattern={{major}},value=v${{ inputs.version }}
+            type=raw,value=latest
+          annotations: |
+            org.opencontainers.image.title=oiltank
+            org.opencontainers.image.description=Reads a heating oil tank float gauge from IP camera frames and publishes the level to Home Assistant over MQTT.
+            org.opencontainers.image.licenses=MIT
+
+      - name: Publish the multi-arch tags
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          args=()
+          while IFS= read -r tag; do args+=(--tag "$tag"); done \
+            < <(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
+          while IFS= read -r annotation; do args+=(--annotation "$annotation"); done \
+            < <(jq -r '.annotations[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
+          for digest in *; do args+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${args[@]}"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"

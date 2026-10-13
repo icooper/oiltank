@@ -1,0 +1,16 @@
+# Keeps the SHA-pinned actions current. PRs come weekly, grouped, and only for releases at least
+# 14 days old. The "ci(deps)" title passes the PR-title check and doesn't cause a release.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope

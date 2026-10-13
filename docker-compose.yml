@@ -1,17 +1,21 @@
 # Oil tank level reader.
 #
 # Before the first start:
+#   docker compose pull     # the published image, for amd64 and arm64 (e.g. a Raspberry Pi)
 #   mkdir -p data && sudo chown 65532:65532 data
 #   cp .env.example .env    # then fill it in: camera URL, MQTT broker, ... (git-ignored)
 #   docker compose run --rm oiltank calibrate init --camera --top X Y --bottom X Y   # see README
 #
 # Then `docker compose up -d`. One-off commands run alongside, e.g.:
 #   docker compose run --rm oiltank calibrate show --camera
+#
+# To update: `docker compose pull && docker compose up -d`. From a checkout, `docker compose build`
+# builds the image locally under the same name instead (see CONTRIBUTING.md).
 
 services:
   oiltank:
+    image: ghcr.io/icooper/oiltank:latest # or pin a major version, e.g. :1
     build: .
-    image: oiltank:latest
     container_name: oiltank
     command: ["run"]
     restart: unless-stopped
