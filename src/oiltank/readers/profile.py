@@ -41,7 +41,7 @@ def find_peak(scores: FloatArray, exclusion: float) -> Peak | None:
         if d != 0.0:
             offset = float(np.clip(0.5 * (a - c) / d, -0.5, 0.5))
 
-    far = np.abs(np.arange(len(scores)) - k) > exclusion
+    far = np.abs(np.arange(len(scores)) - k) >= exclusion  # "at least", as documented
     runner_up = float(filled[far].max()) if far.any() else float("-inf")
     return Peak(row=k + offset, score=best, runner_up=runner_up)
 

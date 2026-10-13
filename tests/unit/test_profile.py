@@ -26,6 +26,17 @@ def test_runner_up_is_outside_exclusion_zone() -> None:
     assert peak.prominence == pytest.approx(0.4, abs=0.03)
 
 
+def test_runner_up_exactly_at_the_exclusion_distance_counts() -> None:
+    scores = np.zeros(40, np.float32)
+    scores[20] = 1.0
+    scores[30] = 0.8  # exactly `exclusion` rows away: a separate peak, so it is the runner-up
+    scores[29] = 0.9  # one row closer: still inside the excluded zone
+    peak = find_peak(scores, exclusion=10)
+    assert peak is not None
+    assert peak.runner_up == pytest.approx(0.8)
+    assert peak.prominence == pytest.approx(0.2)
+
+
 def test_nans_ignored_and_all_nan_is_none() -> None:
     scores = _bump(50)
     scores[:20] = np.nan
