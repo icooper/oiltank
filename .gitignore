@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# oiltank runtime state (mounted into the container; never commit)
+/config/
+/data/
+
+# Backups written by `oiltank calibrate`, and images from the README's example commands
+*.yaml.bak
+/gauge.jpg
+/check.jpg

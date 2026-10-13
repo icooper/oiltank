@@ -1,0 +1,73 @@
+[project]
+name = "oiltank"
+version = "0.1.0"
+description = "Reads a heating oil tank float gauge from IP camera frames and publishes the level to Home Assistant over MQTT."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE.md"]
+authors = [{ name = "Ian Cooper" }]
+requires-python = ">=3.14"
+dependencies = [
+    "httpx>=0.28.1",
+    "numpy>=2.5.4",
+    "opencv-python-headless>=5.0.0.93",
+    "paho-mqtt>=2.1.0",
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+oiltank = "oiltank.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.11,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+    "types-pyyaml>=6.0.12.20260906",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "SIM", # simplify
+    "N",   # pep8-naming
+    "PTH", # use pathlib
+    "NPY", # numpy-specific
+    "RUF", # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -m 'not integration'"
+markers = [
+    "integration: needs Docker (mosquitto); run with `uv run pytest -m integration`",
+]
+
+[tool.uv]
+# Rebuild the (non-editable) package when source changes, not only when pyproject.toml does;
+# otherwise Docker builds with a warm uv cache install a stale wheel.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]
