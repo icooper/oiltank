@@ -31,7 +31,9 @@ def web(
     """
     settings = load_settings()
     app = create_app(
-        FileControl(settings.data_dir), settings, read_only=read_only or settings.web.read_only
+        FileControl(settings.data_dir, settings.calibration_path),
+        settings,
+        read_only=read_only or settings.web.read_only,
     )
     port = port or settings.web.port or DEFAULT_PORT
     typer.echo(f"web UI on http://{host}:{port}/ (Ctrl-C stops it)")

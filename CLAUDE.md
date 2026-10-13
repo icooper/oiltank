@@ -150,6 +150,14 @@ flowchart LR
     - **Every URL must be relative**, for path prefixes and proxies (a test checks).
     - Static files are served under a content hash and cached for good.
     - Pure modules are tested with `node --test` (`tests/js/`).
+    - **Anything they work out that the server also works out** (tile rows ↔ `t`, strip rows,
+      the disc angle) is checked against `tests/data/js-vectors.json`, which Python writes.
+  - **History view** (`history_api.py`, with pure `timeline.py` and `kymograph.py`):
+    - Levels are recomputed with the current calibration from `t` carried onto the current
+      epoch, and the filter is replayed from before the range.
+    - Archive records are joined to history rows by timestamp, which gives a record its epoch.
+    - Gauge-over-time tiles are one PNG per UTC day, cached in memory under a version naming
+      their inputs. The client fetches them with `?v=<version>`, which makes them immutable.
     - The Node version is `.nvmrc`'s (`nvm use` locally; `setup-node` with `node-version-file`
       in workflows). Node is the one tool not run through uv.
 

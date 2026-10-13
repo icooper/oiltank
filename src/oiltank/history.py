@@ -99,25 +99,28 @@ class History:
             if "epoch" not in columns:  # schema 1
                 self._db.execute("ALTER TABLE readings ADD COLUMN epoch INTEGER")
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        self._has_epochs = True
 
     @classmethod
     def open_readonly(cls, path: Path) -> Self:
         """Open the history to read only: no schema changes, safe alongside the service.
 
-        Raises OSError if there's no history, and RuntimeError if it hasn't been upgraded to this
-        version's schema (the service does that when it starts).
+        A history the service hasn't upgraded yet (schema 1, from before epochs) reads as if
+        every reading were on the current axis, which is how the service treated them then.
+        Raises OSError if there's no history, and RuntimeError if it's from a newer version.
         """
         if not path.is_file():
             raise FileNotFoundError(f"no history at {path}")
         uri = path.resolve().as_uri()
         try:
-            db = _check_version(_connect(f"{uri}?mode=ro"), path)
+            db, version = _check_version(_connect(f"{uri}?mode=ro"), path)
         except sqlite3.OperationalError:
             # A read-only directory (a copy, mounted read-only) can't hold WAL's shared-memory
             # file; read the database file alone instead.
-            db = _check_version(_connect(f"{uri}?immutable=1"), path)
+            db, version = _check_version(_connect(f"{uri}?immutable=1"), path)
         history = cls.__new__(cls)
         history._db = db
+        history._has_epochs = version >= 2
         return history
 
     def close(self) -> None:
@@ -179,7 +182,8 @@ class History:
     ) -> list[StoredReading]:
         """Like :meth:`observations`, with what the filter made of each and its epoch."""
         query = (
-            "SELECT ts, fraction, confidence, t, problem, accepted, frames, epoch FROM readings "
+            "SELECT ts, fraction, confidence, t, problem, accepted, frames, "
+            f"{'epoch' if self._has_epochs else 'NULL'} FROM readings "
             "WHERE ts >= ?"
         )
         args = [since.isoformat()]
@@ -255,10 +259,14 @@ class History:
         return epoch, change
 
     def current_epoch(self) -> AxisEpoch | None:
+        if not self._has_epochs:
+            return None
         row = self._db.execute(f"SELECT {_EPOCH_COLUMNS} FROM epochs WHERE current").fetchone()
         return None if row is None else _epoch(row)
 
     def epochs(self) -> dict[int, AxisEpoch]:
+        if not self._has_epochs:
+            return {}
         rows = self._db.execute(f"SELECT {_EPOCH_COLUMNS} FROM epochs")
         return {row[0]: _epoch(row) for row in rows}
 
@@ -296,20 +304,17 @@ def _epoch(row: tuple[int, str, float, float, float, float, float, float, str]) 
     )
 
 
-def _check_version(db: sqlite3.Connection, path: Path) -> sqlite3.Connection:
-    """``db``, if it holds this version's schema (closed otherwise)."""
+def _check_version(db: sqlite3.Connection, path: Path) -> tuple[sqlite3.Connection, int]:
+    """``db`` and its schema version, if this version can read it (closed otherwise)."""
     try:
-        version = db.execute("PRAGMA user_version").fetchone()[0]
+        version = int(db.execute("PRAGMA user_version").fetchone()[0])
     except sqlite3.Error:
         db.close()
         raise
-    if version != SCHEMA_VERSION:
+    if not 1 <= version <= SCHEMA_VERSION:
         db.close()
-        raise RuntimeError(
-            f"{path} is schema {version}, not {SCHEMA_VERSION}; the service upgrades it when it "
-            "starts"
-        )
-    return db
+        raise RuntimeError(f"{path} is from a newer oiltank (schema {version})")
+    return db, version
 
 
 def _connect(uri: str) -> sqlite3.Connection:

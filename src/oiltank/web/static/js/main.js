@@ -1,9 +1,52 @@
-// Starts the page: polls the status, and wires up Read now.
+// Starts the page: the Now and History views (chosen by the #hash), status polling and Read now.
+// `?embed=card` shows a compact History view for a Home Assistant card; `?theme=` forces a theme.
 
 import { getJSON, postJSON } from "./api.js";
+import { HistoryView } from "./history.js";
 import { render } from "./status.js";
+import { formatHash, parseHash, parseOptions } from "./store.js";
 
 const POLL_MS = 5000;
+const options = parseOptions(window.location.search);
+if (options.theme) document.documentElement.dataset.theme = options.theme;
+if (options.card) document.body.classList.add("embedded");
+
+function showError(message) {
+  const banner = document.getElementById("page-error");
+  banner.textContent = `Something went wrong on this page: ${message}. Reloading may help.`;
+  banner.hidden = false;
+}
+window.addEventListener("error", (e) => showError(e.message));
+window.addEventListener("unhandledrejection", (e) => showError(e.reason?.message ?? String(e.reason)));
+
+// ---- views --------------------------------------------------------------------------------------
+
+let historyView = null;
+
+function show() {
+  const state = parseHash(window.location.hash);
+  const view = options.card ? "history" : state.view;
+  for (const name of ["now", "history"]) document.getElementById(`view-${name}`).hidden = name !== view;
+  for (const tab of document.querySelectorAll(".tabs a")) {
+    tab.setAttribute("aria-current", tab.dataset.view === view ? "page" : "false");
+  }
+  if (view !== "history") return;
+  if (!historyView) {
+    historyView = new HistoryView(document.getElementById("view-history"), {
+      card: options.card,
+      onState: (s) => {
+        const hash = formatHash({ view: "history", ...s });
+        if (hash !== window.location.hash) window.history.replaceState(null, "", hash);
+      },
+    });
+  }
+  historyView.open(state);
+}
+
+window.addEventListener("hashchange", show);
+
+// ---- status -------------------------------------------------------------------------------------
+
 let etag = null;
 let lastReading = null;
 let timer = null;
@@ -20,7 +63,7 @@ async function refresh() {
         showGauge(ts);
       }
     }
-  } catch (error) {
+  } catch {
     const chip = document.getElementById("service");
     chip.textContent = "Can't reach oiltank";
     chip.dataset.tone = "bad";
@@ -33,8 +76,12 @@ function showGauge(ts) {
     img.hidden = true;
     return;
   }
-  img.onload = () => { img.hidden = false; };
-  img.onerror = () => { img.hidden = true; };
+  img.onload = () => {
+    img.hidden = false;
+  };
+  img.onerror = () => {
+    img.hidden = true;
+  };
   img.src = `api/gauge.jpg?ts=${encodeURIComponent(ts)}`;
 }
 
@@ -66,4 +113,5 @@ document.addEventListener("visibilitychange", () => {
   else clearTimeout(timer);
 });
 
+show();
 tick();

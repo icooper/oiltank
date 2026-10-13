@@ -265,9 +265,33 @@ oiltank calibrate point --fraction 0.93 --note "delivery: 172 gal on the ticket"
 
 ## Web UI
 
-The service can also serve a web page. It shows the level as Home Assistant sees it, the latest
-gauge image and the service's state, and it has a **Read now** button. It's off until you give it
-a port in `.env`:
+The service can also serve a web page. It has two views:
+
+- **Now:** the level as Home Assistant sees it, the latest gauge image, the service's state and
+  a **Read now** button.
+- **History:** every reading on a timeline, to scrub through and watch the indicator move.
+  - The level chart shows each reading and the filtered level, with refills and problems marked.
+    Faint dots are low-confidence readings; hollow ones were rejected.
+  - Under it, on the same time axis, each archived reading's strip is a column, so the disc reads
+    as a band sliding down the gauge, with a step up at each refill. A misread shows as a blue dot
+    off the band. The dashed lines are the gauge's marks (E, F and your calibration points).
+  - Below that, the reading under the cursor is shown three ways:
+    - its strip, with where the reader put the disc and the reader's score for every row;
+    - the nearest full frame, with the disc outlined;
+    - its details: confidence, problem, camera shift.
+
+  To move around the History view:
+  - Drag across the chart to scrub, or tap on a phone.
+  - **←**/**→** step one reading; **Shift** steps a day.
+  - **Space** plays it as a timelapse.
+  - **[**/**]** jump to the previous or next problem, rejected reading or refill.
+  - Scroll or pinch to zoom.
+  - The address bar keeps the view and the reading, so a link opens the same place.
+
+  Levels are always worked out with the current calibration, so after you recalibrate, the
+  whole history shows the new levels.
+
+It's off until you give it a port in `.env`:
 
 ```sh
 OILTANK_WEB_PORT=8780
@@ -287,7 +311,7 @@ private one such as Tailscale, and never forward it from the internet. To narrow
 - **Browse only:** `OILTANK_WEB_READ_ONLY=true` makes it refuse calibration changes.
 
 `oiltank web` serves the same page without the service, for looking at a data directory from
-elsewhere. Read now isn't available there.
+elsewhere (a copy is fine, even one from an older version). Read now isn't available there.
 
 ```sh
 docker compose run --rm -p 8780:8780 oiltank web --host 0.0.0.0
@@ -327,9 +351,13 @@ Then add the card:
 
 ```yaml
 type: iframe
-url: https://oiltank.example.com/
-aspect_ratio: 75%
+url: https://oiltank.example.com/?embed=card
+aspect_ratio: 100%
 ```
+
+`?embed=card` shows a compact History view without the page's header and controls. Leave it off
+for the whole UI, for example in a Webpage dashboard. `&theme=dark` or `&theme=light` sets the
+theme. Otherwise it follows the device, not Home Assistant's theme.
 
 <details>
 <summary>Under Home Assistant's own name instead</summary>

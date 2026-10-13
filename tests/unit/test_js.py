@@ -39,7 +39,13 @@ def node() -> str:
 def test_javascript(node: str) -> None:
     files = sorted(str(f) for f in TESTS.glob("*.test.js"))
     assert files
-    result = subprocess.run([node, "--test", *files], capture_output=True, text=True, timeout=120)
+    result = subprocess.run(
+        [node, "--test", *files],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "TZ": "UTC"},  # tick labels are local times
+    )
     assert result.returncode == 0, result.stdout + result.stderr
 
 

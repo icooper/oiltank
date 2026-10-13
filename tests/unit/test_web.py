@@ -6,7 +6,7 @@ import re
 import socket
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -20,7 +20,7 @@ from oiltank.config import Settings, WebSettings
 from oiltank.events import EventKind
 from oiltank.model import LevelState
 from oiltank.web.app import STATIC, create_app
-from oiltank.web.control import FileControl, ServiceControl
+from oiltank.web.control import Current, FileControl, ServiceControl
 from oiltank.web.schemas import ServiceInfo
 from oiltank.web.security import Policy, host_allowed, refusal
 from oiltank.web.server import WebError, WebServer
@@ -36,6 +36,10 @@ class FakeControl:
     image: bytes | None = None
     here: bool = True
     read: list[bool] = field(default_factory=list)
+    now: Current | None = None
+
+    def current(self) -> Current | None:
+        return self.now
 
     def service_info(self) -> ServiceInfo:
         return ServiceInfo(here=self.here, alive=True, reading=False, mqtt_connected=True)
@@ -79,7 +83,8 @@ def client(
 
 
 def asset_paths(html: str) -> list[str]:
-    return re.findall(r'(?:src|href)="([^"]+)"', html)
+    """The page's files (not its in-page links, like ``#view=history``)."""
+    return [p for p in re.findall(r'(?:src|href)="([^"]+)"', html) if not p.startswith("#")]
 
 
 # ---- pages ----------------------------------------------------------------------------------
@@ -273,7 +278,7 @@ def test_service_control_reads_the_snapshot(rig: Rig, settings: Settings) -> Non
 
 
 def test_file_control_reads_the_heartbeat(tmp_path: Path) -> None:
-    control = FileControl(tmp_path)
+    control = FileControl(tmp_path, tmp_path / "calibration.yaml")
     assert control.service_info() == ServiceInfo(here=False, alive=False)
     beat = tmp_path / "heartbeat"
     beat.write_text(json.dumps({"ts": "x", "last_reading": T0.isoformat(), "mqtt_connected": True}))
@@ -316,3 +321,17 @@ def test_web_server_reports_a_taken_port() -> None:
         app = create_app(FakeControl(), Settings(), read_only=False)
         with pytest.raises(WebError, match=str(port)):
             WebServer(app, "127.0.0.1", port).start()
+
+
+def test_history_inside_the_service(rig: Rig, settings: Settings) -> None:
+    """Served by `oiltank run`: the readings come from the history the service is writing, with
+    the service's own calibration."""
+    c = client(ServiceControl(rig.service, rig.events), settings)
+    rig.service.cycle()
+    since = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    r = c.get("/api/readings", params={"start": since})
+    assert r.status_code == 200
+    [level] = r.json()["readings"]["level"]
+    assert level == pytest.approx(98, abs=1)
+    current = ServiceControl(rig.service, rig.events).current()
+    assert current.epoch == rig.service.snapshot.epoch

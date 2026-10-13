@@ -12,9 +12,15 @@
 <body>
 <header class="bar">
   <h1>Oil tank</h1>
+  <nav class="tabs" aria-label="Views">
+    <a href="#view=now" data-view="now">Now</a>
+    <a href="#view=history" data-view="history">History</a>
+  </nav>
   <span id="service" class="chip" role="status">Connecting…</span>
 </header>
-<main>
+<p id="page-error" class="banner page-error" role="alert" hidden></p>
+
+<main id="view-now" class="view">
   <p id="problem" class="banner" role="alert" hidden></p>
   <section class="card level" aria-labelledby="level-heading">
     <div class="reading">
@@ -38,6 +44,64 @@
     <button id="read-now" type="button">Read now</button>
     <p id="schedule" class="muted"></p>
     <p id="archive" class="muted"></p>
+  </section>
+</main>
+
+<main id="view-history" class="view" hidden>
+  <section class="card history" aria-label="Readings over time">
+    <div class="toolbar">
+      <div class="group" role="group" aria-label="Time range">
+        <button type="button" class="quiet" data-range="1d">Day</button>
+        <button type="button" class="quiet" data-range="7d">Week</button>
+        <button type="button" class="quiet" data-range="30d">Month</button>
+        <button type="button" class="quiet" data-range="90d">3 months</button>
+        <button type="button" class="quiet" data-range="1y">Year</button>
+      </div>
+      <div class="group" role="group" aria-label="Move">
+        <button type="button" class="quiet" id="pan-back" aria-label="Earlier">‹</button>
+        <button type="button" class="quiet" id="pan-now">Latest</button>
+        <button type="button" class="quiet" id="pan-fwd" aria-label="Later">›</button>
+      </div>
+      <div class="group playback" role="group" aria-label="Play">
+        <button type="button" class="quiet" id="play" aria-pressed="false">Play</button>
+        <label class="visually-hidden" for="speed">Speed</label>
+        <select id="speed">
+          <option value="2">2/s</option>
+          <option value="5" selected>5/s</option>
+          <option value="10">10/s</option>
+          <option value="25">25/s</option>
+        </select>
+      </div>
+      <div class="group jumps" role="group" aria-label="Jump">
+        <button type="button" class="quiet" id="prev-event" aria-label="Previous">‹</button>
+        <label class="visually-hidden" for="jump-kind">Jump to</label>
+        <select id="jump-kind">
+          <option value="problem">Problems</option>
+          <option value="rejected">Rejected readings</option>
+          <option value="fill">Refills</option>
+        </select>
+        <button type="button" class="quiet" id="next-event" aria-label="Next">›</button>
+      </div>
+    </div>
+    <div id="plots" class="plots" tabindex="0"
+         aria-label="Level and gauge over time. Arrow keys step through readings; Shift steps a day; Space plays.">
+      <canvas id="chart"></canvas>
+      <canvas id="strips"></canvas>
+      <canvas id="overlay" class="overlay"></canvas>
+    </div>
+    <p id="history-status" class="muted status" role="status"></p>
+    <p class="hint muted">Drag to scrub · ←/→ one reading · Shift+←/→ a day · Space plays · [ ] jump · wheel or pinch to zoom</p>
+  </section>
+  <section id="inspector" class="card inspector" aria-label="The reading under the cursor">
+    <figure class="strip-view">
+      <canvas id="strip"></canvas>
+      <figcaption class="muted">The strip: the gauge's marks (dashed), where the reader put the disc (blue), each frame of the burst (dots) and the reader's score per row (right).</figcaption>
+    </figure>
+    <figure class="frame-view">
+      <canvas id="frame"></canvas>
+      <figcaption id="frame-caption" class="muted"></figcaption>
+    </figure>
+    <dl id="reading-facts" class="facts"></dl>
   </section>
 </main>
 </body>

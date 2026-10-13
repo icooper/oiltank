@@ -60,15 +60,16 @@ body {
 
 .bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 6px 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--card);
 }
 
-h1 { font-size: 1.1rem; margin: 0; }
+h1 { font-size: 1.1rem; margin: 0; white-space: nowrap; }
 
 main {
   max-width: 960px;
@@ -199,3 +200,94 @@ button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   color: var(--bad);
   font-weight: 600;
 }
+
+/* ---- views and navigation ------------------------------------------------------------------- */
+
+:root { --mark: #b7791f; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --mark: #f6c35b; } }
+:root[data-theme="dark"] { --mark: #f6c35b; }
+
+.tabs { display: flex; gap: 4px; margin-right: auto; margin-left: 16px; }
+.tabs a {
+  padding: 4px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 600;
+}
+.tabs a[aria-current="page"] { color: var(--fg); background: var(--bg); }
+.tabs a:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+
+.view[hidden] { display: none; }
+.page-error { margin: 12px 16px 0; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+button.quiet {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--border);
+  padding: 5px 10px;
+  font-weight: 500;
+}
+button.quiet[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+
+select {
+  font: inherit;
+  padding: 5px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--fg);
+}
+
+/* ---- history -------------------------------------------------------------------------------- */
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 10px; }
+.group { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+
+.plots {
+  position: relative;
+  width: 100%;
+  user-select: none;
+  -webkit-user-select: none;
+  border-radius: 6px;
+}
+.plots:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+.plots canvas { display: block; }
+#strips { margin-top: 6px; }
+.overlay { position: absolute; top: 0; left: 0; touch-action: none; cursor: col-resize; }
+
+.status:empty, .hint:empty { display: none; }
+.status { margin: 8px 0 0; }
+.hint { margin: 8px 0 0; font-size: 0.85rem; }
+
+.inspector {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.inspector figure { margin: 0; }
+.inspector canvas { display: block; max-width: 100%; height: auto; }
+.inspector figcaption { margin-top: 6px; font-size: 0.8rem; max-width: 320px; }
+.inspector .facts { grid-template-columns: minmax(0, 1fr); }
+
+@media (max-width: 760px) {
+  .inspector { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- a Home Assistant card: History only, compact ------------------------------------------- */
+
+body.embedded .bar, body.embedded .hint, body.embedded .playback, body.embedded .jumps, body.embedded .frame-view,
+body.embedded .strip-view figcaption { display: none; }
+body.embedded main { padding: 8px; gap: 8px; }
+body.embedded .card { padding: 10px; }
+body.embedded .inspector { grid-template-columns: auto minmax(0, 1fr); gap: 10px; }

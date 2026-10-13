@@ -51,9 +51,17 @@ uv run oiltank calibrate show \
 `uv run oiltank web` serves the web UI on http://127.0.0.1:8780/ without the service.
 
 The pages are plain ES modules in `src/oiltank/web/static/`, with no build step. Edit them and
-reload. Every URL they use must be relative (`api/status`, not `/api/status`), so that the UI also
-works under a path prefix. A test checks this. Keep logic that can be tested without a browser in
-modules that don't touch the DOM (like `format.js`), and test those in `tests/js/`.
+reload.
+
+- **Relative URLs:** every URL the pages use must be relative (`api/status`, not
+  `/api/status`), so that the UI also works under a path prefix. A test checks this.
+- **Pure modules:** keep logic that can be tested without a browser in modules that don't touch
+  the DOM, and test those in `tests/js/`. These are `format.js`, `timescale.js` (the shared time
+  axis and its ticks), `series.js` (stepping and jumping through readings), `store.js` (the URL
+  hash) and `geometry.js`.
+- **Drawing modules** (`chart.js`, `strips.js`, `inspector.js`, `history.js`) aren't run by the
+  tests. Check them in a browser. A data directory with some history makes that easier. Any
+  error in the page shows in a banner at the top.
 
 ## Code layout
 
@@ -105,6 +113,13 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
 - `tests/unit/test_web.py`: the web UI's server side, covering pages and assets, the status API,
   the request checks (host names, JSON-only changes, origins, framing), serving under a path
   prefix, and the server thread;
+- `tests/unit/test_web_history.py`, `test_timeline.py` and `test_kymograph.py`: the History view's
+  API. It runs over a data directory made from the sample frames, with the disc moved down the
+  gauge, and covers recalibrated levels, a day's tile (the disc's band moves the right number of
+  rows), records for the inspector, re-read scores, and which files are served;
+- `tests/unit/test_js_vectors.py`: values the pages must work out exactly as the server does,
+  written to `tests/data/js-vectors.json` (`UPDATE_GOLDEN=1` to rewrite) and checked by
+  `tests/js/geometry.test.js`;
 - `tests/js/*.test.js`: the web UI's pure JavaScript modules, with Node's built-in test runner.
   `tests/unit/test_js.py` runs them and parses every module, so `uv run pytest` covers them too.
   They need the Node version in `.nvmrc` (`nvm use`). Without Node they're skipped locally; CI

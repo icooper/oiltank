@@ -181,15 +181,29 @@ def test_reading_a_copy_in_a_read_only_directory(tmp_path: Path) -> None:
         copy.chmod(0o755)
 
 
-def test_read_only_needs_an_upgraded_history(tmp_path: Path) -> None:
+def test_read_only_reads_older_histories_and_refuses_newer(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         History.open_readonly(tmp_path / "missing.db")
     old = tmp_path / "old.db"
     db = sqlite3.connect(old)
     db.executescript(SCHEMA_1)
+    db.execute(
+        "INSERT INTO readings (ts, fraction, confidence, t, problem, accepted, frames) "
+        "VALUES (?, 0.5, 0.9, 0.6, NULL, 1, 5)",
+        (T0.isoformat(),),
+    )
+    db.commit()
     db.close()
-    with pytest.raises(RuntimeError, match="upgrades it"):
-        History.open_readonly(old)
+    with History.open_readonly(old) as h:  # as the MVP's service left it
+        [reading] = h.readings(T0, onto=successor(None, "frame0.jpg", SAMPLE_AXIS))
+        assert (reading.t, reading.epoch) == (0.6, None)
+        assert h.current_epoch() is None and h.epochs() == {}
+    newer = tmp_path / "newer.db"
+    db = sqlite3.connect(newer)
+    db.execute("PRAGMA user_version = 99")
+    db.close()
+    with pytest.raises(RuntimeError, match="newer oiltank"):
+        History.open_readonly(newer)
 
 
 def test_ranges(tmp_path: Path) -> None:

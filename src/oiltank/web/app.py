@@ -6,23 +6,23 @@ contents and cached for good; ``index.html`` is never cached, so a new version s
 """
 
 import hashlib
-import json
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
+from oiltank.archive import ArchiveReader
 from oiltank.config import Settings
 from oiltank.publish.discovery import state_payload
 from oiltank.web.control import Control
+from oiltank.web.history_api import history_router
+from oiltank.web.responses import IMMUTABLE, json_response
 from oiltank.web.schemas import ArchiveInfo, Status
 from oiltank.web.security import Policy, SecurityMiddleware
 
 STATIC = Path(__file__).parent / "static"
-IMMUTABLE = "public, max-age=31536000, immutable"
 
 
 def static_hash(root: Path = STATIC) -> str:
@@ -40,16 +40,6 @@ class _ImmutableFiles(StaticFiles):
         if response.status_code == 200:
             response.headers["Cache-Control"] = IMMUTABLE
         return response
-
-
-def _json(request: Request, payload: Any) -> Response:
-    """``payload`` as JSON, with an ETag: an unchanged payload is a bodiless 304."""
-    body = json.dumps(payload, separators=(",", ":")).encode()
-    etag = f'"{hashlib.sha256(body).hexdigest()[:16]}"'
-    headers = {"ETag": etag, "Cache-Control": "no-cache"}
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-    return Response(body, media_type="application/json", headers=headers)
 
 
 def create_app(control: Control, settings: Settings, *, read_only: bool) -> FastAPI:
@@ -79,7 +69,7 @@ def create_app(control: Control, settings: Settings, *, read_only: bool) -> Fast
                 max_size=int(archive.max_mb * 1024 * 1024) if archive.enabled else None,
             ),
         )
-        return _json(request, body.model_dump(mode="json"))
+        return json_response(request, body.model_dump(mode="json"))
 
     @app.get("/api/gauge.jpg", include_in_schema=False)
     def gauge() -> Response:
@@ -96,4 +86,12 @@ def create_app(control: Control, settings: Settings, *, read_only: bool) -> Fast
             )
         return JSONResponse({"detail": "reading"}, 202)
 
+    app.include_router(
+        history_router(
+            settings,
+            control,
+            ArchiveReader(settings.data_dir / "archive"),
+            settings.data_dir / "oiltank.db",
+        )
+    )
     return app
