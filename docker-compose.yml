@@ -33,6 +33,11 @@ services:
 
     env_file: .env # every setting, plus TZ (see .env.example); required
 
+    # The web UI (README.md, "Web UI"): set OILTANK_WEB_PORT=8780 in .env, then publish the port,
+    # or leave it unpublished and reach it through a reverse proxy on the same Docker network.
+    # ports:
+    #   - "8780:8780"
+
     healthcheck: # the service's loop refreshes a heartbeat file at least every 30 s
       test: ["CMD", "/app/.venv/bin/oiltank", "healthcheck"]
       interval: 60s

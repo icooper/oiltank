@@ -6,15 +6,18 @@ import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
+import httpx
 import pytest
 
 from oiltank.config import Settings
 from tests.conftest import SAMPLES
 from tests.fakes import serve_go2rtc
-from tests.integration.conftest import Watcher
+from tests.integration.conftest import Watcher, free_port
 
 pytestmark = pytest.mark.integration
 OILTANK = str(Path(sys.executable).parent / "oiltank")
@@ -82,3 +85,50 @@ def test_service_end_to_end(env: dict[str, str], settings: Settings, watcher: Wa
     history = subprocess.run([OILTANK, "history"], env=env, capture_output=True, text=True)
     assert history.returncode == 0
     assert "now: level 9" in history.stdout
+
+
+def test_service_serves_the_web_ui(env: dict[str, str], watcher: Watcher) -> None:
+    port = free_port()
+    env = env | {"OILTANK_WEB_PORT": str(port), "OILTANK_WEB_HOST": "127.0.0.1"}
+    base = f"http://127.0.0.1:{port}"
+    proc = subprocess.Popen(
+        [OILTANK, "run"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+    try:
+        status = _wait_for_status(base, lambda s: s["state"] is not None)
+        assert status["state"]["level"] == pytest.approx(98, abs=1)
+        assert status["service"]["here"] is True
+        assert httpx.get(f"{base}/api/gauge.jpg").content[:2] == b"\xff\xd8"
+        page = httpx.get(f"{base}/")
+        assert page.status_code == 200 and "Oil tank" in page.text
+
+        first = status["state"]["ts"]
+        cross = httpx.post(f"{base}/api/read-now", json={}, headers={"Origin": "https://x.io"})
+        assert cross.status_code == 403
+        assert httpx.post(f"{base}/api/read-now", json={}).status_code == 202
+        _wait_for_status(base, lambda s: s["state"]["ts"] != first)
+
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=30) == 0
+        with pytest.raises(httpx.ConnectError):
+            httpx.get(f"{base}/api/status", timeout=2)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        output = proc.communicate()[0]
+    assert f"web UI on http://127.0.0.1:{port}/" in output
+    assert "Read now pressed" in output
+
+
+def _wait_for_status(base: str, ready: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            status: dict[str, Any] = httpx.get(f"{base}/api/status", timeout=2).json()
+            if ready(status):
+                return status
+        except httpx.TransportError:
+            pass
+        if time.monotonic() > deadline:
+            raise AssertionError("the web UI didn't report the expected status in time")
+        time.sleep(0.2)

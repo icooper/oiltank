@@ -1,12 +1,11 @@
-"""The service, with a scripted camera and a publisher that records what it's asked to publish."""
+"""The service, with a scripted camera and a publisher that records what it's asked to publish
+(``rig`` and friends are in ``tests/unit/conftest.py``)."""
 
 import json
 import queue
-import shutil
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,116 +20,16 @@ from oiltank.config import Settings
 from oiltank.epochs import Change
 from oiltank.events import Event, EventKind
 from oiltank.history import History
-from oiltank.model import Frame, LevelState, Problem
+from oiltank.model import Frame, Problem
 from oiltank.publish.discovery import Topics
-from oiltank.publish.mqtt import MqttError
 from oiltank.service import (
     CalibrationConflictError,
     Service,
     ServiceBusyError,
     ServiceStoppedError,
 )
-from oiltank.sources.base import CameraError
-from tests.conftest import SAMPLES
 from tests.cv import synth
-
-
-@dataclass
-class ScriptedCamera:
-    """Hands out the sample frames (distinct each time), or raises when told to."""
-
-    frames: list[Frame]
-    fail: bool = False
-    calls: int = 0
-    delay: float = 0.0
-
-    def grab(self, n: int, spacing_s: float) -> list[Frame]:
-        self.calls += 1
-        threading.Event().wait(self.delay)
-        if self.fail:
-            raise CameraError("go2rtc:1984 didn't answer within 15 s")
-        start = (self.calls - 1) * n
-        return [self.frames[(start + k) % len(self.frames)] for k in range(n)]
-
-
-@dataclass
-class RecordingPublisher:
-    topics: Topics
-    connected: bool = True
-    broken: bool = False
-    states: list[LevelState] = field(default_factory=list)
-    images: list[bytes] = field(default_factory=list)
-    calls: list[str] = field(default_factory=list)
-
-    def start(self, timeout_s: float = 15.0, *, keep_trying: bool = False) -> bool:
-        self.calls.append("start")
-        return True
-
-    def stop(self, *, offline: bool = True) -> None:
-        self.calls.append("stop")
-
-    def publish_discovery(self) -> None:
-        self.calls.append("discovery")
-
-    def publish_availability(self, online: bool) -> None:
-        self.calls.append(f"availability:{online}")
-
-    def publish_state(self, state: LevelState) -> None:
-        if self.broken:
-            raise MqttError("publishing to oiltank/oil_tank/state failed: not connected")
-        self.states.append(state)
-
-    def publish_image(self, jpeg: bytes) -> None:
-        self.images.append(jpeg)
-
-
-@pytest.fixture
-def data_dir(tmp_path: Path) -> Path:
-    data = tmp_path / "data"
-    data.mkdir()
-    shutil.copyfile(SAMPLES / "calibration.yaml", data / "calibration.yaml")
-    shutil.copyfile(SAMPLES / "frame0.jpg", data / "frame0.jpg")
-    return data
-
-
-@pytest.fixture
-def settings(data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
-    monkeypatch.setenv("OILTANK_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("OILTANK_MQTT_HOST", "broker")
-    monkeypatch.setenv("OILTANK_TANK_CAPACITY", "250")
-    monkeypatch.setenv("OILTANK_CAMERA_BURST_FRAMES", "2")
-    return Settings()
-
-
-@pytest.fixture
-def camera(sample_frames: list[Frame]) -> ScriptedCamera:
-    return ScriptedCamera(frames=sample_frames)
-
-
-@dataclass
-class Rig:
-    service: Service
-    publisher: RecordingPublisher
-    events: queue.Queue[Event]
-    history: History
-
-
-@pytest.fixture
-def rig(settings: Settings, camera: ScriptedCamera) -> Iterator[Rig]:
-    events: queue.Queue[Event] = queue.Queue()
-    publisher = RecordingPublisher(Topics.from_settings(settings))
-    history = History(settings.data_dir / "oiltank.db")
-    service = Service(
-        settings,
-        settings.calibration_path,
-        camera,
-        publisher,
-        events,
-        history,
-        republish_delay=lambda: 0.0,
-    )
-    yield Rig(service, publisher, events, history)
-    history.close()
+from tests.fakes import RecordingPublisher, Rig, ScriptedCamera
 
 
 def test_a_cycle_reads_stores_and_publishes(rig: Rig) -> None:

@@ -10,6 +10,7 @@ license-files = ["LICENSE.md"]
 authors = [{ name = "Ian Cooper" }]
 requires-python = ">=3.14"
 dependencies = [
+    "fastapi>=0.143.0",
     "httpx>=0.28.1",
     "numpy>=2.5.4",
     "opencv-python-headless>=5.0.0.93",
@@ -19,6 +20,7 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "pyyaml>=6.0.3",
     "typer>=0.27.3",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
@@ -75,8 +77,13 @@ markers = [
 # other version, so a newer uv can't rewrite uv.lock in a way CI and Docker don't understand.
 required-version = "==0.11.11"
 # Rebuild the (non-editable) package when source changes, not only when pyproject.toml does;
-# otherwise Docker builds with a warm uv cache install a stale wheel.
-cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]
+# otherwise Docker builds with a warm uv cache install a stale wheel. The web UI's static files
+# are part of the package too.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "src/**/*.py" },
+    { file = "src/oiltank/web/static/**" },
+]
 
 # Releases are tag-only: main needs signed commits through PRs, so CI tags the merge commit and
 # creates the GitHub Release, and never pushes a commit. See CONTRIBUTING.md.

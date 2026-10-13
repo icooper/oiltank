@@ -1,6 +1,7 @@
 """Test doubles shared by unit and integration tests."""
 
 import base64
+import queue
 import threading
 import time
 from collections.abc import Iterator
@@ -8,6 +9,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
+
+from oiltank.events import Event
+from oiltank.history import History
+from oiltank.model import Frame, LevelState
+from oiltank.publish.discovery import Topics
+from oiltank.publish.mqtt import MqttError
+from oiltank.service import Service
+from oiltank.sources.base import CameraError
 
 
 @dataclass
@@ -75,3 +84,60 @@ def serve_go2rtc(frames: list[bytes]) -> Iterator[FakeGo2rtc]:
     finally:
         server.shutdown()
         server.server_close()
+
+
+@dataclass
+class ScriptedCamera:
+    """Hands out the sample frames (distinct each time), or raises when told to."""
+
+    frames: list[Frame]
+    fail: bool = False
+    calls: int = 0
+    delay: float = 0.0
+
+    def grab(self, n: int, spacing_s: float) -> list[Frame]:
+        self.calls += 1
+        threading.Event().wait(self.delay)
+        if self.fail:
+            raise CameraError("go2rtc:1984 didn't answer within 15 s")
+        start = (self.calls - 1) * n
+        return [self.frames[(start + k) % len(self.frames)] for k in range(n)]
+
+
+@dataclass
+class RecordingPublisher:
+    topics: Topics
+    connected: bool = True
+    broken: bool = False
+    states: list[LevelState] = field(default_factory=list)
+    images: list[bytes] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list)
+
+    def start(self, timeout_s: float = 15.0, *, keep_trying: bool = False) -> bool:
+        self.calls.append("start")
+        return True
+
+    def stop(self, *, offline: bool = True) -> None:
+        self.calls.append("stop")
+
+    def publish_discovery(self) -> None:
+        self.calls.append("discovery")
+
+    def publish_availability(self, online: bool) -> None:
+        self.calls.append(f"availability:{online}")
+
+    def publish_state(self, state: LevelState) -> None:
+        if self.broken:
+            raise MqttError("publishing to oiltank/oil_tank/state failed: not connected")
+        self.states.append(state)
+
+    def publish_image(self, jpeg: bytes) -> None:
+        self.images.append(jpeg)
+
+
+@dataclass
+class Rig:
+    service: Service
+    publisher: RecordingPublisher
+    events: queue.Queue[Event]
+    history: History

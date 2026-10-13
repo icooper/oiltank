@@ -1,6 +1,7 @@
 """``oiltank run``, ``healthcheck`` and ``history``: the service and its companions."""
 
 import json
+import logging
 import queue
 import signal
 import threading
@@ -28,6 +29,11 @@ from oiltank.publish.mqtt import MqttError, MqttLink
 from oiltank.service import HEALTHY_AGE_S, Service
 from oiltank.sources.base import CameraConfigError
 from oiltank.sources.http import HttpSource
+from oiltank.web.app import create_app
+from oiltank.web.control import ServiceControl
+from oiltank.web.server import WebError, WebServer
+
+log = logging.getLogger(__name__)
 
 
 def run(calibration_path: CalibrationPath = None) -> None:
@@ -58,6 +64,18 @@ def run(calibration_path: CalibrationPath = None) -> None:
     except ValidationError as e:
         fail(f"invalid calibration {path}: {validation_message(e)}")
 
+    web = None
+    if settings.web.port:
+        app = create_app(
+            ServiceControl(service, events), settings, read_only=settings.web.read_only
+        )
+        web = WebServer(app, settings.web.host, settings.web.port)
+        try:
+            web.start()
+        except WebError as e:
+            fail(str(e))
+        log.info("web UI on http://%s:%d/", settings.web.host, settings.web.port)
+
     stop = threading.Event()
 
     def request_stop(signum: int, frame: FrameType | None) -> None:
@@ -70,6 +88,8 @@ def run(calibration_path: CalibrationPath = None) -> None:
     try:
         service.run(stop)
     finally:
+        if web is not None:
+            web.stop()
         source.close()
         history.close()
 

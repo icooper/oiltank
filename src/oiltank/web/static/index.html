@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Oil tank</title>
+<link rel="icon" href="{{static}}/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{static}}/app.css">
+<script type="module" src="{{static}}/js/main.js"></script>
+</head>
+<body>
+<header class="bar">
+  <h1>Oil tank</h1>
+  <span id="service" class="chip" role="status">Connecting…</span>
+</header>
+<main>
+  <p id="problem" class="banner" role="alert" hidden></p>
+  <section class="card level" aria-labelledby="level-heading">
+    <div class="reading">
+      <h2 id="level-heading" class="label">Level</h2>
+      <p class="big"><span id="level">—</span></p>
+      <p id="volume" class="muted">—</p>
+      <div class="meter" aria-hidden="true"><div id="meter-fill"></div></div>
+      <dl class="facts">
+        <div><dt>Usage</dt><dd id="usage">—</dd></div>
+        <div><dt>Days left</dt><dd id="days-left">—</dd></div>
+        <div><dt>Last fill</dt><dd id="last-fill">—</dd></div>
+        <div><dt>Confidence</dt><dd id="confidence">—</dd></div>
+      </dl>
+    </div>
+    <figure class="gauge">
+      <img id="gauge" alt="The gauge as last read, with the indicator marked" hidden>
+      <figcaption id="gauge-caption" class="muted">No reading yet.</figcaption>
+    </figure>
+  </section>
+  <section class="card actions" aria-label="Service">
+    <button id="read-now" type="button">Read now</button>
+    <p id="schedule" class="muted"></p>
+    <p id="archive" class="muted"></p>
+  </section>
+</main>
+</body>
+</html>

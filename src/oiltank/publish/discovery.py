@@ -154,14 +154,17 @@ def discovery_payload(settings: Settings) -> dict[str, Any]:
             enabled_by_default=False,
         ),
     }
+    device: dict[str, Any] = {
+        "identifiers": [device_id],
+        "name": settings.device.name,
+        "manufacturer": "oiltank",
+        "model": "Float gauge camera reader",
+        "sw_version": __version__,
+    }
+    if settings.web.url is not None:
+        device["configuration_url"] = settings.web.url  # "Visit" on the device page
     return {
-        "device": {
-            "identifiers": [device_id],
-            "name": settings.device.name,
-            "manufacturer": "oiltank",
-            "model": "Float gauge camera reader",
-            "sw_version": __version__,
-        },
+        "device": device,
         "origin": {"name": "oiltank", "sw_version": __version__},
         "availability_topic": topics.availability,
         "qos": 1,

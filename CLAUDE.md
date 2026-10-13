@@ -37,6 +37,8 @@ uv run oiltank read -c samples/calibration.yaml   # live camera, configured in .
 uv run oiltank grab --out frame.jpg               # one frame, exactly as go2rtc sends it
 uv run oiltank run                       # the service (needs data/calibration.yaml and MQTT)
 uv run oiltank history / healthcheck / capture --every 10s --duration 1m
+uv run oiltank web                       # the web UI alone, on http://127.0.0.1:8780/
+node --test "tests/js/*.test.js"         # web UI JS tests alone; Node per .nvmrc (pytest runs them)
 uv add <pkg> / uv add --dev <pkg>        # dependencies; commit uv.lock alongside pyproject.toml
 docker build -t oiltank:dev .            # distroless runtime image (docker-compose.yml for deploys)
 docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev read -c /samples/calibration.yaml --image /samples/frame0.jpg
@@ -129,6 +131,21 @@ flowchart LR
   `CONNECTED`) on a queue that the main loop handles (`service.py`, or `cli/mqtt.py` for
   publishing by hand).
 - `model.py`: the typed, frozen dataclasses passed between stages.
+- `web/`: the web UI, served by `oiltank run` on a thread of its own when `OILTANK_WEB_PORT` is
+  set, or alone by `oiltank web` (`cli/web.py`).
+  - **It reads the service through `ServiceControl`** (the snapshot) and **never changes service
+    state from its own threads**. `FileControl` is the standalone version.
+  - **No login, so `security.py` checks every request:**
+    - private host names only, plus `OILTANK_WEB_URL`'s;
+    - changes must be JSON, from the page's own origin;
+    - a CSP whose `frame-ancestors` comes from `OILTANK_WEB_EMBED_ORIGINS`.
+  - **The pages** are plain ES modules in `web/static/`, with no build step and **no Node in the
+    image**.
+    - **Every URL must be relative**, for path prefixes and proxies (a test checks).
+    - Static files are served under a content hash and cached for good.
+    - Pure modules are tested with `node --test` (`tests/js/`).
+    - The Node version is `.nvmrc`'s (`nvm use` locally; `setup-node` with `node-version-file`
+      in workflows). Node is the one tool not run through uv.
 
 ## CI and releases
 

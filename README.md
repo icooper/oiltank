@@ -21,6 +21,8 @@ run the tests or make changes, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [The service](#the-service)
   - [Frame archive](#frame-archive)
   - [Recording a delivery](#recording-a-delivery)
+- [Web UI](#web-ui)
+  - [In Home Assistant](#in-home-assistant)
 - [Configuration](#configuration)
 - [Calibration](#calibration)
   - [Setting up](#setting-up)
@@ -261,6 +263,98 @@ oiltank calibrate point --fraction 0.93 --note "delivery: 172 gal on the ticket"
   --image /data/captures/20261020-141500Z/2026-10-20/143010Z-frame.jpg
 ```
 
+## Web UI
+
+The service can also serve a web page. It shows the level as Home Assistant sees it, the latest
+gauge image and the service's state, and it has a **Read now** button. It's off until you give it
+a port in `.env`:
+
+```sh
+OILTANK_WEB_PORT=8780
+```
+
+Then publish the port by uncommenting `ports:` in `docker-compose.yml`, and open
+`http://<docker host>:8780/`.
+
+**It has no login.** Anyone who can reach the port can use it. Keep it on your home network or a
+private one such as Tailscale, and never forward it from the internet. To narrow it further:
+
+- **Names:** it only answers to the names a browser uses on a private network. Those are IP
+  addresses, `localhost`, single-label names, and names ending in `.local`, `.lan`, `.home.arpa`
+  or `.internal`. If you reach it by any other name, such as through a reverse proxy, set
+  `OILTANK_WEB_URL` to that address.
+- **Changes:** it only accepts them from its own pages.
+- **Browse only:** `OILTANK_WEB_READ_ONLY=true` makes it refuse calibration changes.
+
+`oiltank web` serves the same page without the service, for looking at a data directory from
+elsewhere. Read now isn't available there.
+
+```sh
+docker compose run --rm -p 8780:8780 oiltank web --host 0.0.0.0
+uv run oiltank web    # from a checkout: http://127.0.0.1:8780/
+```
+
+### In Home Assistant
+
+Home Assistant's **Webpage** card shows the web UI on a dashboard. A **Webpage** dashboard puts
+it in the sidebar.
+
+Your browser loads the page itself, not Home Assistant, so the UI has to be reachable from
+wherever you use Home Assistant. If Home Assistant is served over HTTPS, the UI must be too:
+browsers won't show an `http://` page inside an `https://` one. A reverse proxy that already
+serves Home Assistant can serve the UI as well.
+
+With Caddy, give the UI a name of its own:
+
+```caddyfile
+oiltank.example.com {
+    reverse_proxy docker-host:8780
+}
+```
+
+```sh
+# .env
+OILTANK_WEB_PORT=8780
+OILTANK_WEB_URL=https://oiltank.example.com/
+OILTANK_WEB_EMBED_ORIGINS=https://ha.example.com
+```
+
+- `OILTANK_WEB_EMBED_ORIGINS` lets Home Assistant's pages show the UI in a frame.
+- `OILTANK_WEB_URL` makes the name trusted, and adds a **Visit** link to the device's page in
+  Home Assistant.
+
+Then add the card:
+
+```yaml
+type: iframe
+url: https://oiltank.example.com/
+aspect_ratio: 75%
+```
+
+<details>
+<summary>Under Home Assistant's own name instead</summary>
+
+A path on Home Assistant's name works too:
+
+```caddyfile
+ha.example.com {
+    redir /oiltank-ui /oiltank-ui/
+    handle_path /oiltank-ui/* {
+        reverse_proxy docker-host:8780
+    }
+    reverse_proxy homeassistant:8123
+}
+```
+
+Set `OILTANK_WEB_URL=https://ha.example.com/oiltank-ui/` and leave out
+`OILTANK_WEB_EMBED_ORIGINS`. Choose a path Home Assistant doesn't use.
+
+This shares Home Assistant's origin, which is why a name of its own is better. Home Assistant
+keeps your login in the browser's storage for its origin, so script on the UI's pages could read
+it. A bug in the UI would then expose all of Home Assistant.
+
+</details>
+
 ## Configuration
 
 All settings come from environment variables named `OILTANK_<SECTION>_<KEY>`, normally kept in
@@ -291,6 +385,9 @@ means "not set". An `OILTANK_` name that matches no setting is an error, which c
 | `OILTANK_SERVICE_USAGE_WINDOW_DAYS`, `_USAGE_MIN_HOURS`, `_USAGE_MIN_POINTS` | 7, 24, 12 | Usage-rate trend window, and how much data it needs. |
 | `OILTANK_ARCHIVE_ENABLED`, `_MAX_MB` | true, 2000 | The [frame archive](#frame-archive), and its size limit. |
 | `OILTANK_ARCHIVE_FULL_FRAME_HOURS`, `_PROBLEM_FRAMES` | 6, true | How often to keep a full frame (0: only for problems), and whether to keep problem readings' frames. |
+| `OILTANK_WEB_PORT`, `_HOST` | 0, 0.0.0.0 | The [web UI](#web-ui) (0: off), and the address it listens on. |
+| `OILTANK_WEB_URL`, `_READ_ONLY` | none, false | Where browsers reach the web UI, if not by IP address or a local name; and whether it refuses calibration changes. |
+| `OILTANK_WEB_EMBED_ORIGINS` | | Sites allowed to show the web UI in a frame (space-separated origins, e.g. `https://ha.example.com`). |
 | `OILTANK_DATA_DIR` | data | Calibration, history and archive. Relative to the working directory, which is `/` in the container, so `data` means `./data` from a checkout and `/data` (the same directory, mounted) in the container. |
 | `OILTANK_LOG_LEVEL` | INFO | DEBUG, INFO, WARNING or ERROR. `oiltank -v` logs at DEBUG. |
 | `TZ` | | The container's timezone, used for timestamps on the gauge image. |
@@ -720,7 +817,8 @@ running locked down on the sample frames, before it's published.
 - nothing from the checkout gets into the image except the code and its lock file
   (`.dockerignore` is an allowlist). Settings and credentials come from `.env` at run time, and
   credentials are never logged;
-- it only makes outbound connections, to go2rtc and the MQTT broker. It listens on no ports.
+- it only makes outbound connections, to go2rtc and the MQTT broker. It listens on no ports
+  unless you turn on the [web UI](#web-ui), which has no login, so keep that port private.
 
 ## License
 

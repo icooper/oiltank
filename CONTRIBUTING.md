@@ -27,6 +27,9 @@ uv run mypy                                   # strict type checking
 uv run oiltank --help
 ```
 
+The web UI's JavaScript tests also need [Node](https://nodejs.org/), at the version in `.nvmrc`
+(`nvm use`). It's only for tests; the pages have no build step.
+
 ## Running from a checkout
 
 `uv run oiltank ...` reads `.env` and uses `./data`, the same directory the container mounts at
@@ -45,6 +48,13 @@ uv run oiltank calibrate show \
   --diagnostic check.jpg
 ```
 
+`uv run oiltank web` serves the web UI on http://127.0.0.1:8780/ without the service.
+
+The pages are plain ES modules in `src/oiltank/web/static/`, with no build step. Edit them and
+reload. Every URL they use must be relative (`api/status`, not `/api/status`), so that the UI also
+works under a path prefix. A test checks this. Keep logic that can be tested without a browser in
+modules that don't touch the DOM (like `format.js`), and test those in `tests/js/`.
+
 ## Code layout
 
 The code is in `src/oiltank/`:
@@ -60,6 +70,7 @@ The code is in `src/oiltank/`:
 | `service.py`, `events.py` | The service loop, the events that wake it, and calls into it from other threads |
 | `annotate.py` | The gauge, diagnostic and grid images |
 | `config.py`, `model.py`, `cli/` | Settings, shared data types, the command line |
+| `web/` | The web UI: FastAPI routes, request checks, the server thread, and the pages in `web/static/` (plain ES modules, no build step) |
 
 [CLAUDE.md](CLAUDE.md) has the design rules that keep these apart.
 
@@ -90,10 +101,18 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
   service tests check that the level survives both);
 - `tests/unit/test_archive.py`: archive records and their labels, the full-frame schedule, and the
   size limit; `test_cli_camera.py` also covers `capture`;
+- `tests/unit/test_web.py`: the web UI's server side, covering pages and assets, the status API,
+  the request checks (host names, JSON-only changes, origins, framing), serving under a path
+  prefix, and the server thread;
+- `tests/js/*.test.js`: the web UI's pure JavaScript modules, with Node's built-in test runner.
+  `tests/unit/test_js.py` runs them and parses every module, so `uv run pytest` covers them too.
+  They need the Node version in `.nvmrc` (`nvm use`). Without Node they're skipped locally; CI
+  installs it. Node never goes into the image. To run them alone:
+  `node --test "tests/js/*.test.js"`;
 - `tests/integration/test_mqtt.py` and `test_service.py` (`-m integration`, need Docker): a real
   Mosquitto broker, covering retained discovery, state and image, the button and HA-restart
   events, the last will and `clear`. Also `oiltank run` end to end against a fake go2rtc,
-  including the healthcheck and SIGTERM.
+  including the healthcheck, SIGTERM and the web UI.
 
 Tests never read your `.env` or `OILTANK_*` variables: they run in an empty working directory with
 those variables removed.
