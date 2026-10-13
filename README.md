@@ -1,4 +1,4 @@
-# oil-tank-level
+# oiltank <!-- omit from toc -->
 
 Reads the float gauge on a residential heating-oil tank from an IP camera and publishes the level
 to [Home Assistant](https://www.home-assistant.io/) over MQTT, with entities that appear
@@ -12,16 +12,32 @@ publishes the volume, the usage rate and days left, refills, an annotated gauge 
 **Read now** button, and a problem flag. It keeps a history and an archive of what it saw, which
 is enough to train a model later, and it can record an oil delivery frame by frame.
 
-> **Status: MVP complete (milestones M0–M7).** Running against a real tank. Refill detection and
-> the usage rate have been tested on synthetic data and are waiting for the next delivery. See the
-> [Roadmap](#roadmap) for what's next.
-
-**Contents:** [How it works](#how-it-works) · [Requirements](#requirements) ·
-[Quick start](#quick-start) · [The service](#the-service) · [Configuration](#configuration) ·
-[Calibration](#calibration) · [Home Assistant](#home-assistant) ·
-[Accuracy and limitations](#accuracy-and-limitations) · [Troubleshooting](#troubleshooting) ·
-[Development](#development) · [Container and security](#container-and-security) ·
-[Roadmap](#roadmap)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [The service](#the-service)
+  - [Frame archive](#frame-archive)
+  - [Recording a delivery](#recording-a-delivery)
+- [Configuration](#configuration)
+- [Calibration](#calibration)
+  - [Setting up](#setting-up)
+  - [The report](#the-report)
+  - [Checking a calibration](#checking-a-calibration)
+  - [Points (the scale)](#points-the-scale)
+  - [Disc size](#disc-size)
+  - [After the camera moves](#after-the-camera-moves)
+  - [The file](#the-file)
+- [Home Assistant](#home-assistant)
+  - [Publishing by hand](#publishing-by-hand)
+  - [Topics](#topics)
+  - [Automations](#automations)
+  - [Dashboard card](#dashboard-card)
+- [Accuracy and limitations](#accuracy-and-limitations)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Container and security](#container-and-security)
+- [Roadmap](#roadmap)
+- [License](#license)
 
 ## How it works
 
@@ -742,18 +758,6 @@ non-editable virtualenv, which are copied into
 - it only makes outbound connections, to go2rtc and the MQTT broker. It listens on no ports.
 
 ## Roadmap
-
-- [x] **M0** Project skeleton, tooling, distroless image
-- [x] **M1** Geometry, calibration model, classical reader, annotated output
-- [x] **M2** Calibration CLI
-- [x] **M3** go2rtc HTTP frame source
-- [x] **M4** MQTT discovery, state and availability
-- [x] **M5** Service loop: filtering, history, refill detection, usage rate, Read now button,
-      gauge image, healthcheck
-- [x] **M6** Frame archive and delivery `capture` mode
-- [x] **M7** Documentation pass
-
-Later:
 
 - **A learned reader.** Train a small model on the archive's labelled strips and run it with
   ONNX Runtime, on the CPU or on an NVIDIA GPU (a `gpu` image variant with
