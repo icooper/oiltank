@@ -420,6 +420,7 @@ body.embedded .point-form, body.embedded .draft-bar { display: none; }
   .points th:nth-child(2), .points td:nth-child(2) { display: none; } /* the position */
 }
 
-.g-strip { margin: 0; }
+.gauge-main { display: grid; gap: 16px; min-width: 0; }
+.g-strip { margin: 0; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; }
 .g-strip canvas { display: block; max-width: 100%; height: auto; }
-.g-strip figcaption { margin-top: 6px; font-size: 0.8rem; }
+.g-strip figcaption { font-size: 0.8rem; max-width: 260px; }

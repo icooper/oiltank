@@ -11,7 +11,7 @@ import { drawStrip } from "./stripview.js";
 import { Viewer } from "./viewer.js";
 
 const CHECK_MS = 250;
-const STRIP_SCALE = 1.25; // fits the side panel
+const STRIP_SCALE = 1.5; // as in the History inspector
 const REFERENCE = { kind: "reference" };
 
 const replaced = (list, i, value) => list.map((v, j) => (j === i ? value : v));
