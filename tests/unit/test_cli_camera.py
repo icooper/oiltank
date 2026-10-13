@@ -152,3 +152,22 @@ def test_default_calibration_comes_from_the_data_dir(
     shown = _run("calibrate", "show")
     assert shown.exit_code == 0, shown.output
     assert f"calibration  {data / 'calibration.yaml'}" in shown.stdout
+
+
+def test_capture(go2rtc: FakeGo2rtc, tmp_path: Path) -> None:
+    out = tmp_path / "capture"
+    args = ["capture", "-c", str(SAMPLE_CALIBRATION), "--every", "0.2s", "--duration", "0.6s"]
+    result = _run(*args, "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert "capturing 4 time(s)" in result.stdout
+    assert "4 reading(s), 0 failed" in result.stdout
+    records = sorted(out.rglob("*.json"))
+    assert len(records) == 4
+    assert len(list(out.rglob("*-frame.jpg"))) == 4  # every frame kept
+    assert len(list(out.rglob("*-strip.png"))) == 4
+
+
+def test_capture_rejects_a_bad_duration(go2rtc: FakeGo2rtc) -> None:
+    result = _run("capture", "-c", str(SAMPLE_CALIBRATION), "--every", "soon")
+    assert result.exit_code == 2
+    assert "isn't a duration" in result.output

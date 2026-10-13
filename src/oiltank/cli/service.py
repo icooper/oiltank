@@ -12,6 +12,7 @@ from typing import Annotated
 import typer
 from pydantic import ValidationError
 
+from oiltank.archive import Archive, ArchivePolicy
 from oiltank.calibration import CalibrationError
 from oiltank.cli.common import (
     CalibrationPath,
@@ -45,8 +46,12 @@ def run(calibration_path: CalibrationPath = None) -> None:
         history = History(settings.data_dir / "oiltank.db")
     except (OSError, RuntimeError) as e:
         fail(f"can't open the history database: {e}")
+    archive = None
+    if settings.archive.enabled:
+        policy = ArchivePolicy.from_settings(settings.archive)
+        archive = Archive(settings.data_dir / "archive", policy)
     try:
-        service = Service(settings, path, source, link, events, history)
+        service = Service(settings, path, source, link, events, history, archive=archive)
     except CalibrationError as e:
         fail(str(e))
     except ValidationError as e:

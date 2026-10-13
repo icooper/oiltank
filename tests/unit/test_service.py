@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 import pytest
 
+from oiltank.archive import Archive, ArchivePolicy
 from oiltank.calibration import Calibration, CalibrationPoint
 from oiltank.config import Settings
 from oiltank.history import History
@@ -164,6 +165,28 @@ def test_wrong_resolution(rig: Rig, camera: ScriptedCamera, sample_frames: list[
     for _ in range(3):
         state = rig.service.cycle()
     assert state.problem is Problem.WRONG_RESOLUTION
+
+
+def test_readings_are_archived(settings: Settings, camera: ScriptedCamera) -> None:
+    archive = Archive(settings.data_dir / "archive", ArchivePolicy())
+    with History(settings.data_dir / "oiltank.db") as history:
+        service = Service(
+            settings,
+            settings.calibration_path,
+            camera,
+            RecordingPublisher(Topics.from_settings(settings)),
+            queue.Queue(),
+            history,
+            archive=archive,
+        )
+        service.cycle()
+        service.cycle()
+        camera.fail = True
+        service.cycle()  # no frames: nothing to archive
+    records = sorted((settings.data_dir / "archive").rglob("*.json"))
+    assert len(records) == 2
+    assert len(list((settings.data_dir / "archive").rglob("*-strip.png"))) == 2
+    assert len(list((settings.data_dir / "archive").rglob("*-frame.jpg"))) == 1  # the first only
 
 
 def test_publishing_failures_are_survived(rig: Rig) -> None:

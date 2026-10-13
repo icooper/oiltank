@@ -19,6 +19,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from oiltank.annotate import encode_jpeg, render
+from oiltank.archive import Archive
 from oiltank.calibration import Calibration, CalibrationError, ResolutionMismatch
 from oiltank.config import Settings
 from oiltank.filter import FilterParams, LevelFilter, Observation
@@ -65,6 +66,7 @@ class Service:
         events: queue.Queue[Event],
         history: History,
         *,
+        archive: Archive | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
         republish_delay: Callable[[], float] = lambda: random.uniform(0, 5),
@@ -76,6 +78,7 @@ class Service:
         self._publisher = publisher
         self._events = events
         self._history = history
+        self._archive = archive
         self._clock = clock
         self._monotonic = monotonic
         self._republish_delay = republish_delay
@@ -151,6 +154,11 @@ class Service:
                 m = measure(frames, self._aligner, self._reader, self._calibration)
             except ResolutionMismatch as e:
                 log.error("%s", e)
+        if self._archive is not None:
+            try:
+                self._archive.record(m, frames, self._calibration)
+            except OSError as e:
+                log.error("couldn't archive the reading: %s", e)
         now = frames[-1].ts if frames else self._clock()
         if m is not None:
             obs = Observation(m.ts, m.fraction if m.ok else None, m.confidence, m.t, m.problem)

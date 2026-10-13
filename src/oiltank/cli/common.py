@@ -1,6 +1,7 @@
 """Helpers shared by the CLI commands."""
 
 import errno
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -50,6 +51,17 @@ BurstSpacing = Annotated[
         help="Seconds between frames. Default: OILTANK_CAMERA_BURST_SPACING_S.",
     ),
 ]
+
+
+def parse_duration(text: str) -> float:
+    """Seconds in ``30s``, ``5m``, ``1h``, ``1h30m`` or a bare number of seconds."""
+    match = re.fullmatch(
+        r"\s*(?:(\d+(?:\.\d+)?)h)?\s*(?:(\d+(?:\.\d+)?)m)?\s*(?:(\d+(?:\.\d+)?)s?)?\s*", text
+    )
+    if not text.strip() or match is None or not any(match.groups()):
+        raise typer.BadParameter(f"{text!r} isn't a duration like 30s, 5m, 1h or 1h30m")
+    h, m, sec = (float(g) if g else 0.0 for g in match.groups())
+    return h * 3600 + m * 60 + sec
 
 
 def fail(message: str, code: int = 2) -> NoReturn:

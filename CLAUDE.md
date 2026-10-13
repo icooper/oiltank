@@ -82,6 +82,10 @@ flowchart LR
   median smoothing, confirmed refills, the Theil-Sen usage rate and days left. It's a function of
   the readings alone, so `service.py` rebuilds it on start and after a calibration change by
   replaying `history.py` (SQLite `data/oiltank.db`), with fractions recomputed from the stored `t`.
+- `archive.py`: one record per reading under `data/archive/<UTC date>/`. A record is the JSON
+  (reading, alignment, strip row ↔ t labels), the strip PNG, and sometimes the full frame's
+  original bytes. The full-frame schedule is independent of problem frames. Oldest files go first
+  beyond the size cap. `oiltank capture` writes the same format to `data/captures/` with no cap.
 - `service.py`: one thread. It waits on the event queue (`READ_NOW`, `HA_ONLINE`, `CONNECTED`,
   `STOP`) or the next interval, then runs a cycle: grab → measure → filter → store → publish. It
   writes `data/heartbeat` at least every 30 s for `oiltank healthcheck`. `cli/service.py` installs

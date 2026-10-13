@@ -4,10 +4,10 @@ Reads the float gauge on a residential heating-oil tank from an IP camera and pu
 to [Home Assistant](https://www.home-assistant.io/) over MQTT, with entities that appear
 automatically through MQTT discovery, the way Zigbee2MQTT's do.
 
-> **Status: early development (milestone M5).** The service runs: it reads the gauge from go2rtc
+> **Status: early development (milestone M6).** The service runs. It reads the gauge from go2rtc
 > on a schedule, filters and stores the readings, detects refills, estimates the usage rate and
-> days left, and publishes everything to Home Assistant. The frame archive is next; see
-> [Roadmap](#roadmap).
+> days left, publishes everything to Home Assistant, and archives what it saw. `oiltank capture`
+> records an oil delivery. A final documentation pass (M7) is next; see [Roadmap](#roadmap).
 
 ## How it works
 
@@ -157,6 +157,53 @@ replaying recent readings with the current calibration. So adding a calibration 
 `oiltank calibrate point` while the service runs also corrects the usage history.
 
 `oiltank history [--days N]` lists recent readings and refills, and what they add up to.
+
+### Frame archive
+
+The service also keeps what each reading saw in `data/archive/<UTC date>/`. Each record has three
+parts:
+
+- **`<time>Z.json`**: the reading, the per-frame alignment and results, and the calibration's
+  geometry.
+- **`<time>Z-strip.png`**: the rectified gauge strip, lossless. The JSON's `strip_row`,
+  `strip_t_first_row` and `strip_t_last_row` say where the disc is in it, so every strip is a
+  labelled example for training a model later.
+- **`<time>Z-frame.jpg`**: the full camera frame, exactly as received. It's kept every
+  `OILTANK_ARCHIVE_FULL_FRAME_HOURS` (6) and for every problem reading.
+
+That's about 3.3 MB a day at the default settings: a 21 KB strip per reading and four full frames.
+The oldest records are deleted beyond `OILTANK_ARCHIVE_MAX_MB` (2000), which lasts about 20
+months. Archived frames can be read again with any calibration, which
+makes them useful for checking a calibration change against past readings:
+`oiltank read --image data/archive/2026-10-13/035920Z-frame.jpg`.
+
+### Recording a delivery
+
+A delivery takes the disc from near E to near F in a few minutes. It's the best data you'll get:
+it checks the reader across the whole gauge, and with the delivery ticket it gives you calibration
+points. Start a capture when the truck arrives:
+
+```sh
+oiltank capture --every 10s --duration 30m
+# capturing 181 time(s), every 10 s for 1800 s, into /data/captures/20261020-141500Z (Ctrl-C stops early)
+# 14:15:02   24.6%  t=0.205  confidence 1.00
+# 14:15:12   26.1%  t=0.218  confidence 0.99
+# ...
+```
+
+Each capture keeps the full frame, the strip and the reading in the archive's format, under
+`data/captures/<start time>/`. Captures don't count towards the archive's size limit, and they're
+never deleted automatically. The service keeps running alongside.
+
+To turn the ticket into a calibration point, take the level from just before the delivery (the
+service's last reading, or the capture's first) and add the delivered amount:
+`after = before + delivered / capacity`. Then record that reading against the capture's last
+frame:
+
+```sh
+oiltank calibrate point --fraction 0.93 --note "delivery: 172 gal on the ticket" \
+  --image /data/captures/20261020-141500Z/2026-10-20/143010Z-frame.jpg
+```
 `oiltank healthcheck` (the container's healthcheck) checks that the service's loop has written its
 heartbeat file in the last two minutes. The service stops cleanly on SIGTERM (`docker compose
 stop`): it finishes a reading in progress and marks the device unavailable.
@@ -189,6 +236,8 @@ means "not set". An `OILTANK_` name that matches no setting is an error, which c
 | `OILTANK_SERVICE_MIN_CONFIDENCE`, `_FAILURES_FOR_PROBLEM` | 0.5, 3 | Rejecting readings, and when Problem turns on. See [The service](#the-service). |
 | `OILTANK_SERVICE_SMOOTHING`, `_REFILL_JUMP` | 3, 0.15 | Median window; the rise (fraction of the gauge) that counts as a refill. |
 | `OILTANK_SERVICE_USAGE_WINDOW_DAYS`, `_USAGE_MIN_HOURS`, `_USAGE_MIN_POINTS` | 7, 24, 12 | Usage-rate trend window, and how much data it needs. |
+| `OILTANK_ARCHIVE_ENABLED`, `_MAX_MB` | true, 2000 | The [frame archive](#frame-archive), and its size limit. |
+| `OILTANK_ARCHIVE_FULL_FRAME_HOURS`, `_PROBLEM_FRAMES` | 6, true | How often to keep a full frame (0: only for problems), and whether to keep problem readings' frames. |
 | `OILTANK_DATA_DIR` | data | Calibration, history and archive. Relative to the working directory, which is `/` in the container, so `data` means `./data` from a checkout and `/data` (the same directory, mounted) in the container. |
 | `OILTANK_LOG_LEVEL` | INFO | DEBUG, INFO, WARNING or ERROR. `oiltank -v` logs at DEBUG. |
 | `TZ` | | The container's timezone, used for timestamps on the gauge image. |
@@ -568,6 +617,8 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
   `tests/data/discovery.json`, and the state payload;
 - `tests/unit/test_filter.py`, `test_history.py` and `test_service.py`: the level filter (smoothing,
   refills, usage, problems), the SQLite history, and the service loop with a scripted camera;
+- `tests/unit/test_archive.py`: archive records and their labels, the full-frame schedule, and the
+  size limit; `test_cli_camera.py` also covers `capture`;
 - `tests/integration/test_mqtt.py` and `test_service.py` (`-m integration`, need Docker): a real
   Mosquitto broker, covering retained discovery, state and image, the button and HA-restart
   events, the last will and `clear`. Also `oiltank run` end to end against a fake go2rtc,
@@ -609,7 +660,7 @@ non-editable virtualenv, which are copied into
 - [x] **M4** MQTT discovery, state and availability
 - [x] **M5** Service loop: filtering, history, refill detection, usage rate, Read now button,
       gauge image, healthcheck
-- [ ] **M6** Frame archive and delivery `capture` mode
+- [x] **M6** Frame archive and delivery `capture` mode
 - [ ] **M7** Documentation pass
 - [ ] *Later:* ONNX reader with GPU (CUDA) image, model trained on archived frames, tank volume
       chart

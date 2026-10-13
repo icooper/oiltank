@@ -101,6 +101,18 @@ class ServiceSettings(_Section):
     usage_min_points: Annotated[int, Field(ge=3)] = 12
 
 
+class ArchiveSettings(_Section):
+    """What the service keeps of each reading, under ``<data_dir>/archive``."""
+
+    enabled: bool = True
+    max_mb: Annotated[float, Field(gt=0)] = 2000.0
+    """Oldest records are deleted beyond this. Delivery captures don't count towards it."""
+    full_frame_hours: Annotated[float, Field(ge=0)] = 6.0
+    """Keep a full camera frame this often (0: never, apart from problem readings)."""
+    problem_frames: bool = True
+    """Keep the full frame of every reading that has a problem."""
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
@@ -122,6 +134,7 @@ class Settings(BaseSettings):
     device: DeviceSettings = DeviceSettings()
     tank: TankSettings = TankSettings()
     service: ServiceSettings = ServiceSettings()
+    archive: ArchiveSettings = ArchiveSettings()
 
     @property
     def calibration_path(self) -> Path:
