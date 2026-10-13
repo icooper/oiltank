@@ -84,10 +84,21 @@ class TankSettings(_Section):
 
 
 class ServiceSettings(_Section):
-    """The long-running service (milestone M5)."""
+    """The long-running service: how often it reads, and how it filters and derives values."""
 
     interval_min: Annotated[float, Field(gt=0)] = 15.0
     min_confidence: Annotated[float, Field(ge=0, le=1)] = 0.5
+    """Readings below this confidence are rejected; the last good level stays published."""
+    failures_for_problem: Annotated[int, Field(ge=1)] = 3
+    """Consecutive rejected readings before Problem turns on."""
+    smoothing: Annotated[int, Field(ge=1, le=20)] = 3
+    """The published level is the median of this many recent good readings."""
+    refill_jump: Annotated[float, Field(gt=0, le=1)] = 0.15
+    """A rise of more than this (fraction of the gauge), confirmed by the next reading, is a
+    refill."""
+    usage_window_days: Annotated[float, Field(gt=0)] = 7.0
+    usage_min_hours: Annotated[float, Field(gt=0)] = 24.0
+    usage_min_points: Annotated[int, Field(ge=3)] = 12
 
 
 class Settings(BaseSettings):

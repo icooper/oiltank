@@ -4,11 +4,10 @@ Reads the float gauge on a residential heating-oil tank from an IP camera and pu
 to [Home Assistant](https://www.home-assistant.io/) over MQTT, with entities that appear
 automatically through MQTT discovery, the way Zigbee2MQTT's do.
 
-> **Status: early development (milestone M4).** `oiltank read` reads the gauge from go2rtc or
-> from image files, the `oiltank calibrate` commands create, check and adjust a calibration, and
-> `oiltank mqtt publish` sends readings to Home Assistant. The long-running service (filtering,
-> history, refill detection, usage rate) is next; see [Roadmap](#roadmap). Sections marked
-> *planned* describe behaviour that isn't built yet.
+> **Status: early development (milestone M5).** The service runs: it reads the gauge from go2rtc
+> on a schedule, filters and stores the readings, detects refills, estimates the usage rate and
+> days left, and publishes everything to Home Assistant. The frame archive is next; see
+> [Roadmap](#roadmap).
 
 ## How it works
 
@@ -75,8 +74,8 @@ model, running on CPU or an NVIDIA GPU, can replace it through config later.
 ## Quick start
 
 `docker-compose.yml` already has the hardened deployment settings: non-root, read-only root
-filesystem, no capabilities, and `./data` for state. All configuration comes from `.env`. The
-long-running `run` command and its healthcheck arrive in milestone M5. For now:
+filesystem, no capabilities, `./data` for state, and a healthcheck. All configuration comes from
+`.env`.
 
 ```sh
 mkdir -p data && sudo chown 65532:65532 data
@@ -86,13 +85,18 @@ alias oiltank='docker compose run --rm oiltank'
 oiltank grab --out /data/frame.jpg         # check the camera: a full-size frame in ./data
 ```
 
-Then [calibrate](#calibration), and read the gauge:
+Then [calibrate](#calibration), check a reading, and start the service:
 
 ```sh
 oiltank read
 # fetching 5 frame(s) from go2rtc.lan:1984, 2 s apart
 # level 97.8%  (t=0.817, confidence 1.00, indicator at x=2169.0 y=1047.9, 5 frame(s))
+docker compose up -d
+docker compose ps                          # STATUS shows (healthy) once it's running
+docker compose logs -f                     # a line per reading
 ```
+
+The **Oil Tank** device then appears in Home Assistant (see [Home Assistant](#home-assistant)).
 
 You can also try the sample frames without a camera or `.env`:
 
@@ -120,6 +124,43 @@ frame-size mismatch or a wrong camera URL. Its other options:
 `oiltank grab --out PATH [--frames N]` saves frames exactly as the camera sent them. That's useful
 for calibration, for test samples, or for checking what go2rtc returns.
 
+## The service
+
+`oiltank run`, the container's default command, reads the gauge every
+`OILTANK_SERVICE_INTERVAL_MIN` minutes (15 by default), straight away when **Read now** is pressed,
+and once at startup:
+
+```
+INFO oiltank.service: starting: a reading every 15 min, publishing to homeassistant.lan:1883
+INFO oiltank.publish.mqtt: connected to homeassistant.lan:1883
+INFO oiltank.service: level 97.8% (245 gal), confidence 1.00; using 1.4 gal/day, 168 days left
+```
+
+Each reading is filtered before it's published:
+
+- **Rejected readings** have a problem, or a confidence below `OILTANK_SERVICE_MIN_CONFIDENCE`.
+  They leave the last good level published. After `OILTANK_SERVICE_FAILURES_FOR_PROBLEM` (3) in a
+  row, **Problem** turns on, with the reason. It turns off again at the next good reading.
+- **Smoothing.** The level is the median of the last `OILTANK_SERVICE_SMOOTHING` (3) good
+  readings, so one misread can't move it.
+- **Refills.** A rise of more than `OILTANK_SERVICE_REFILL_JUMP` (15% of the gauge) is held back
+  until the next reading confirms it. Then **Last fill** and **Last fill amount** update, and the
+  usage history restarts. A jump the next reading doesn't confirm is ignored.
+- **Usage rate** is a robust trend of the volume over the last
+  `OILTANK_SERVICE_USAGE_WINDOW_DAYS` (7) since the last refill. It appears once there are 12
+  readings spanning at least 24 hours. **Days left** is the volume above `OILTANK_TANK_RESERVE`
+  divided by the usage rate. It's unknown while the usage is near zero, such as in summer.
+
+Every reading attempt is stored in `data/oiltank.db` (SQLite), along with the gauge position it
+saw. On startup, and whenever `calibration.yaml` changes, the service rebuilds its state by
+replaying recent readings with the current calibration. So adding a calibration point with
+`oiltank calibrate point` while the service runs also corrects the usage history.
+
+`oiltank history [--days N]` lists recent readings and refills, and what they add up to.
+`oiltank healthcheck` (the container's healthcheck) checks that the service's loop has written its
+heartbeat file in the last two minutes. The service stops cleanly on SIGTERM (`docker compose
+stop`): it finishes a reading in progress and marks the device unavailable.
+
 ## Configuration
 
 All settings come from environment variables named `OILTANK_<SECTION>_<KEY>`, normally kept in
@@ -142,9 +183,12 @@ means "not set". An `OILTANK_` name that matches no setting is an error, which c
 | `OILTANK_MQTT_USERNAME`, `_PASSWORD`, `_TLS` | none, none, false | |
 | `OILTANK_MQTT_CLIENT_ID`, `_TOPIC_PREFIX`, `_DISCOVERY_PREFIX` | oiltank, oiltank, homeassistant | |
 | `OILTANK_DEVICE_ID`, `_NAME` | oil_tank, Oil Tank | How the tank appears in Home Assistant (M4). |
-| `OILTANK_TANK_CAPACITY`, `_UNIT` | 260, gal | Usable capacity when the gauge reads F (M5). |
-| `OILTANK_TANK_RESERVE` | 0 | "Days left" counts down to this volume (M5). |
-| `OILTANK_SERVICE_INTERVAL_MIN`, `_MIN_CONFIDENCE` | 15, 0.5 | Reading interval and acceptance threshold (M5). |
+| `OILTANK_TANK_CAPACITY`, `_UNIT` | 260, gal | Usable capacity when the gauge reads F. |
+| `OILTANK_TANK_RESERVE` | 0 | "Days left" counts down to this volume. |
+| `OILTANK_SERVICE_INTERVAL_MIN` | 15 | Minutes between readings. |
+| `OILTANK_SERVICE_MIN_CONFIDENCE`, `_FAILURES_FOR_PROBLEM` | 0.5, 3 | Rejecting readings, and when Problem turns on. See [The service](#the-service). |
+| `OILTANK_SERVICE_SMOOTHING`, `_REFILL_JUMP` | 3, 0.15 | Median window; the rise (fraction of the gauge) that counts as a refill. |
+| `OILTANK_SERVICE_USAGE_WINDOW_DAYS`, `_USAGE_MIN_HOURS`, `_USAGE_MIN_POINTS` | 7, 24, 12 | Usage-rate trend window, and how much data it needs. |
 | `OILTANK_DATA_DIR` | data | Calibration, history and archive. Relative to the working directory, which is `/` in the container, so `data` means `./data` from a checkout and `/data` (the same directory, mounted) in the container. |
 | `OILTANK_LOG_LEVEL` | INFO | DEBUG, INFO, WARNING or ERROR. `oiltank -v` logs at DEBUG. |
 | `TZ` | | The container's timezone, used for timestamps on the gauge image. |
@@ -368,12 +412,12 @@ integration is needed: HA's MQTT integration and a broker are enough.
 |---|---|---|
 | Level | sensor, % | |
 | Volume | sensor, `volume_storage` | Level × `OILTANK_TANK_CAPACITY`, in `OILTANK_TANK_UNIT` |
-| Usage rate | sensor, gal/d | *M5*; unknown until there's enough history |
-| Days left | sensor, `duration` | *M5*; until `OILTANK_TANK_RESERVE` |
-| Last fill, Last fill amount | sensors, `timestamp` / `volume` | *M5*; from refill detection |
+| Usage rate | sensor, gal/d | Unknown until there's a day of readings |
+| Days left | sensor, `duration` | Until `OILTANK_TANK_RESERVE`; unknown while usage is near zero |
+| Last fill, Last fill amount | sensors, `timestamp` / `volume` | From refill detection |
 | Gauge | image | The annotated gauge, updated with each reading |
 | Read now | button | Takes and publishes a reading straight away |
-| Problem | binary sensor, `problem` | On when there's no trustworthy reading; the `reason` attribute says why |
+| Problem | binary sensor, `problem` | On after repeated rejected readings; the `reason` attribute says why (see [Troubleshooting](#troubleshooting)) |
 | Confidence, Last reading | diagnostic sensors | |
 | Gauge position | diagnostic sensor, disabled by default | The raw position `t` along the axis |
 
@@ -382,8 +426,10 @@ connects and sets a last will of `offline`.
 
 ### Publishing by hand
 
-Until the service (M5) runs continuously, `oiltank mqtt publish` takes one reading and publishes
-everything. `--listen 300` keeps it connected for five minutes to answer **Read now**:
+`oiltank mqtt publish` takes one reading and publishes it without the service's filtering or
+history. It's useful for setting up the Home Assistant side. `--listen 300` keeps it connected
+for five minutes to answer **Read now**. Don't run it while the service is running: they share the
+availability topic.
 
 ```sh
 oiltank mqtt publish --listen 300
@@ -418,7 +464,35 @@ default. Every message is published with QoS 1.
 discovery when it reconnects, and a few seconds after Home Assistant announces `online` on
 `homeassistant/status`. So a restart of either side recovers by itself.
 
-*Planned (M5/M7):* example dashboard card and automations (low level, refill notification).
+### Automations
+
+A low-oil alert and a delivery notice, using the default entity ids:
+
+```yaml
+automation:
+  - alias: Heating oil low
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.oil_tank_days_left
+        below: 21
+    actions:
+      - action: notify.notify
+        data:
+          message: >-
+            Heating oil: {{ states('sensor.oil_tank_level') }}% left, about
+            {{ states('sensor.oil_tank_days_left') }} days at the current rate. Time to order.
+  - alias: Heating oil delivered
+    triggers:
+      - trigger: state
+        entity_id: sensor.oil_tank_last_fill
+    conditions: "{{ trigger.from_state.state not in ['unknown', 'unavailable'] }}"
+    actions:
+      - action: notify.notify
+        data:
+          message: "Oil delivered: {{ states('sensor.oil_tank_last_fill_amount') }} gal."
+```
+
+*Planned (M7):* an example dashboard card.
 
 ## Accuracy and limitations
 
@@ -449,8 +523,17 @@ MQTT problems, from `oiltank mqtt`:
 | `no answer from host:1883` | Wrong host or port, or the broker is down. TLS brokers usually listen on 8883 with `OILTANK_MQTT_TLS=true`. |
 | Device doesn't appear in HA | Check that HA's MQTT integration uses the same broker and discovery prefix (`homeassistant`). `mosquitto_sub -v -t 'homeassistant/device/#'` should show the config message. |
 
-*Planned:* the `problem` reasons Home Assistant will show (`camera_unreachable`, `camera_moved`,
-`low_confidence`), and how to check discovery with `mosquitto_sub`.
+**Problem** reasons, as the `reason` attribute in Home Assistant and in the service's log:
+
+| Reason | Meaning | What to do |
+|---|---|---|
+| `camera_unreachable` | No frames: go2rtc or the camera is down, or it keeps sending the same frame | Check go2rtc; the service retries every interval |
+| `camera_moved` | The alignment anchor can't be found | `oiltank calibrate rebase --camera` (or `init` if the view changed) |
+| `low_confidence` | Frames arrive, but the disc can't be found reliably | `oiltank calibrate show --camera --diagnostic /data/check.jpg` |
+| `wrong_resolution` | Frames don't match the calibration's size | Point `OILTANK_CAMERA_URL` at the main stream, or recalibrate |
+
+`docker compose ps` shows `unhealthy` if the service's loop stops making progress. Docker
+doesn't restart unhealthy containers by itself, but `docker compose logs` shows why.
 
 ## Development
 
@@ -483,9 +566,12 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
 - `tests/unit/test_config.py`: settings, `.env` and unknown-name detection;
 - `tests/unit/test_discovery.py`: the discovery message, against the golden file
   `tests/data/discovery.json`, and the state payload;
-- `tests/integration/test_mqtt.py` (`-m integration`, needs Docker): a real Mosquitto broker,
-  covering retained discovery, state and image, the button and HA-restart events, the last will
-  and `clear`.
+- `tests/unit/test_filter.py`, `test_history.py` and `test_service.py`: the level filter (smoothing,
+  refills, usage, problems), the SQLite history, and the service loop with a scripted camera;
+- `tests/integration/test_mqtt.py` and `test_service.py` (`-m integration`, need Docker): a real
+  Mosquitto broker, covering retained discovery, state and image, the button and HA-restart
+  events, the last will and `clear`. Also `oiltank run` end to end against a fake go2rtc,
+  including the healthcheck and SIGTERM.
 
 Tests never read your `.env` or `OILTANK_*` variables: they run in an empty working directory with
 those variables removed.
@@ -521,7 +607,7 @@ non-editable virtualenv, which are copied into
 - [x] **M2** Calibration CLI
 - [x] **M3** go2rtc HTTP frame source
 - [x] **M4** MQTT discovery, state and availability
-- [ ] **M5** Service loop: filtering, history, refill detection, usage rate, Read now button,
+- [x] **M5** Service loop: filtering, history, refill detection, usage rate, Read now button,
       gauge image, healthcheck
 - [ ] **M6** Frame archive and delivery `capture` mode
 - [ ] **M7** Documentation pass

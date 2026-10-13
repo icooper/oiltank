@@ -44,6 +44,8 @@ class EventKind(StrEnum):
     """Home Assistant (re)started: republish discovery and state."""
     READ_NOW = "read_now"
     """The Read now button was pressed."""
+    STOP = "stop"
+    """Not from MQTT: the process was asked to stop (SIGTERM), so the loop should wake and end."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,18 +96,31 @@ class MqttLink:
 
     # ---- lifecycle -----------------------------------------------------------------------------
 
-    def start(self, timeout_s: float = 15.0) -> None:
-        """Connect, and wait until the broker accepts us. Reconnects happen in the background."""
+    def start(self, timeout_s: float = 15.0, *, keep_trying: bool = False) -> bool:
+        """Connect, and wait until the broker accepts us. Reconnects happen in the background.
+
+        Raises :class:`MqttError` if that takes longer than ``timeout_s``, unless ``keep_trying``:
+        then it returns False and paho keeps trying in the background (for the service).
+        """
         try:
             self._client.connect_async(self._host, self._port, keepalive=60)
         except (OSError, ValueError) as e:
             raise MqttError(f"cannot connect to {self._host}:{self._port}: {e}") from e
         self._client.loop_start()
-        if not self._connected.wait(timeout_s):
-            self._client.loop_stop()
-            raise MqttError(
-                self._failure or f"no answer from {self._host}:{self._port} within {timeout_s:g} s"
-            )
+        if self._connected.wait(timeout_s):
+            return True
+        problem = (
+            self._failure or f"no answer from {self._host}:{self._port} within {timeout_s:g} s"
+        )
+        if keep_trying:
+            log.warning("%s; still trying", problem)
+            return False
+        self._client.loop_stop()
+        raise MqttError(problem)
+
+    @property
+    def connected(self) -> bool:
+        return self._client.is_connected()
 
     def stop(self, *, offline: bool = True) -> None:
         """Say ``offline`` (unless told not to) and disconnect cleanly."""
@@ -148,6 +163,7 @@ class MqttLink:
     ) -> None:
         if reason_code.is_failure:
             log.warning("disconnected from %s (%s); reconnecting", self._host, reason_code)
+            self._connected.clear()
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
         payload = msg.payload.decode(errors="replace").strip()

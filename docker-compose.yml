@@ -3,10 +3,10 @@
 # Before the first start:
 #   mkdir -p data && sudo chown 65532:65532 data
 #   cp .env.example .env    # then fill it in: camera URL, MQTT broker, ... (git-ignored)
+#   docker compose run --rm oiltank calibrate init --camera --top X Y --bottom X Y   # see README
 #
-# Note: the long-running `run` command and `healthcheck` arrive in milestone M5. Until then, use
-# one-off commands, e.g.:
-#   docker compose run --rm oiltank read
+# Then `docker compose up -d`. One-off commands run alongside, e.g.:
+#   docker compose run --rm oiltank calibrate show --camera
 
 services:
   oiltank:
@@ -15,6 +15,7 @@ services:
     container_name: oiltank
     command: ["run"]
     restart: unless-stopped
+    stop_grace_period: 30s # lets a reading in progress finish before it says "offline"
 
     # Rootless + locked down: distroless nonroot user, read-only root FS, no capabilities.
     user: "65532:65532"
@@ -28,12 +29,12 @@ services:
 
     env_file: .env # every setting, plus TZ (see .env.example); required
 
-    # healthcheck:            # enabled in M5, once `oiltank healthcheck` exists
-    #   test: ["CMD", "/app/.venv/bin/oiltank", "healthcheck"]
-    #   interval: 60s
-    #   timeout: 10s
-    #   retries: 3
-    #   start_period: 30s
+    healthcheck: # the service's loop refreshes a heartbeat file at least every 30 s
+      test: ["CMD", "/app/.venv/bin/oiltank", "healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
     # GPU inference (post-MVP): build the GPU image variant and uncomment.
     # deploy:

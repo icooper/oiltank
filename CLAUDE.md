@@ -77,7 +77,15 @@ flowchart LR
 - `cli/`: Typer app. `__init__.py` has `read`, `calibrate.py` the `calibrate` sub-commands,
   `common.py` the shared helpers. Use plain `X = tuple[...]` aliases in option annotations;
   Typer can't read `type X = ...` statements.
-- `pipeline.py` and `publish/discovery.py` are **pure**: no I/O, easy to test.
+- `pipeline.py`, `filter.py` and `publish/discovery.py` are **pure**: no I/O, easy to test.
+- `filter.py`: `LevelFilter`, a state machine over `Observation`s that handles the confidence gate,
+  median smoothing, confirmed refills, the Theil-Sen usage rate and days left. It's a function of
+  the readings alone, so `service.py` rebuilds it on start and after a calibration change by
+  replaying `history.py` (SQLite `data/oiltank.db`), with fractions recomputed from the stored `t`.
+- `service.py`: one thread. It waits on the event queue (`READ_NOW`, `HA_ONLINE`, `CONNECTED`,
+  `STOP`) or the next interval, then runs a cycle: grab → measure → filter → store → publish. It
+  writes `data/heartbeat` at least every 30 s for `oiltank healthcheck`. `cli/service.py` installs
+  SIGTERM/SIGINT handlers: as PID 1 in a container, Python ignores SIGTERM without one.
 - `publish/mqtt.py`: paho-mqtt 2.x. `MqttLink` sets a last will (`offline`). On every (re)connect
   it subscribes and announces `online` and discovery. **CV never runs in paho callbacks**:
   callbacks do only cheap MQTT work and put `Event`s (`READ_NOW`, `HA_ONLINE`, `CONNECTED`) on a

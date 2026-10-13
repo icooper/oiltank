@@ -94,6 +94,8 @@ class Problem(StrEnum):
     CAMERA_MOVED = "camera_moved"
     LOW_CONFIDENCE = "low_confidence"
     CAMERA_UNREACHABLE = "camera_unreachable"
+    WRONG_RESOLUTION = "wrong_resolution"
+    """Frames don't match the calibration's size: usually a substream or snapshot URL."""
 
 
 class Notice(StrEnum):
