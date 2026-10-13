@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,21 @@ DAY = tuple(f"frame{i}.jpg" for i in range(6))
 """2026-10-12 17:03 local: daylight through the basement window, IR on the gauge."""
 NIGHT = tuple(f"frame{i}.jpg" for i in range(6, 10))
 """2026-10-12 22:44-22:47 local: IR only; the window is dark and the exposure a little brighter."""
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep the developer's real ``.env`` and ``OILTANK_*`` variables out of every test.
+
+    Settings read ``.env`` from the working directory, so tests run from an empty one. Tests use
+    absolute paths for the samples.
+    """
+    for name in list(os.environ):
+        if name.upper().startswith("OILTANK_"):
+            monkeypatch.delenv(name)
+    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
 
 
 @pytest.fixture(scope="session")

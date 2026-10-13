@@ -95,7 +95,7 @@ def _header(
     else:
         text = str(measurement.problem or "no reading")
         detail = f"conf {measurement.confidence:.2f}"
-    stamp = measurement.ts.strftime("%Y-%m-%d %H:%M")
+    stamp = measurement.ts.astimezone().strftime("%Y-%m-%d %H:%M")  # local time (TZ)
     colour = _status_colour(measurement)
     cv2.putText(header, text, (8, 28), _FONT, 0.8, colour, 2, cv2.LINE_AA)
     cv2.putText(header, f"{detail}   {stamp}", (8, 52), _FONT, 0.45, _GREY, 1, cv2.LINE_AA)

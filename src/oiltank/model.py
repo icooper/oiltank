@@ -20,6 +20,8 @@ class Frame:
     gray: GrayImage
     ts: datetime
     source: str
+    data: bytes | None = field(default=None, repr=False)
+    """The encoded image as received (JPEG from the camera), when there is one."""
 
     @property
     def size(self) -> tuple[int, int]:

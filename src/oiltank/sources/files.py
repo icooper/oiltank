@@ -14,12 +14,12 @@ class FrameDecodeError(ValueError):
 
 
 def decode_gray(data: bytes, *, source: str, ts: datetime | None = None) -> Frame:
-    """Decode encoded image bytes (JPEG/PNG) into a grayscale :class:`Frame`."""
+    """Decode encoded image bytes (JPEG/PNG) into a grayscale :class:`Frame` that keeps them."""
     decoded = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE)
     if decoded is None:
         raise FrameDecodeError(f"could not decode image from {source}")
     gray = np.asarray(decoded, dtype=np.uint8)
-    return Frame(gray=gray, ts=ts or datetime.now(UTC), source=source)
+    return Frame(gray=gray, ts=ts or datetime.now(UTC), source=source, data=data)
 
 
 def load_frame(path: Path) -> Frame:

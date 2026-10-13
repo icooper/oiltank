@@ -4,9 +4,8 @@ Every command that changes the calibration prints the same report as ``show`` fo
 saves it (keeping the previous file as ``.bak``) unless ``--dry-run`` is given.
 """
 
-import shutil
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import UTC, date
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -36,13 +35,15 @@ from oiltank.calibration import (
     Disc,
 )
 from oiltank.cli.common import (
-    DEFAULT_CALIBRATION,
     CalibrationPath,
+    calibration_file,
     fail,
+    grab_frames,
     load_calibration,
     load_frames,
     tools,
     validation_message,
+    write_bytes,
     write_image,
 )
 from oiltank.model import Frame, Measurement
@@ -66,9 +67,22 @@ Images = Annotated[
         help="Frame to measure on; repeat for a burst. Defaults to the reference frame.",
     ),
 ]
+Camera = Annotated[
+    bool,
+    typer.Option("--camera", help="Measure on a burst from the camera (OILTANK_CAMERA_URL)."),
+]
 OneImage = Annotated[
-    Path,
-    typer.Option("--image", exists=True, dir_okay=False, readable=True, help="A full-size frame."),
+    Path | None,
+    typer.Option(
+        "--image",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="A full-size frame, or use --camera.",
+    ),
+]
+OneCamera = Annotated[
+    bool, typer.Option("--camera", help="Take the frame from the camera (OILTANK_CAMERA_URL).")
 ]
 DryRun = Annotated[bool, typer.Option("--dry-run", help="Show the result without saving it.")]
 Diagnostic = Annotated[
@@ -88,8 +102,19 @@ def _xy(p: Sequence[float]) -> str:
     return f"({p[0]:.1f}, {p[1]:.1f})"
 
 
-def _frames_or_reference(images: list[Path] | None, calibration: Calibration) -> list[Frame]:
+def _frames(images: list[Path] | None, camera: bool, calibration: Calibration) -> list[Frame]:
+    """A burst from the camera, the given image files, or else the reference frame."""
+    if camera and images:
+        fail("give --image or --camera, not both")
+    if camera:
+        return grab_frames()
     return load_frames(images or [calibration.reference_path])
+
+
+def _one_frame(image: Path | None, camera: bool) -> Frame:
+    if (image is None) == (not camera):
+        fail("give either --image or --camera")
+    return grab_frames(frames=1)[0] if camera else load_frames([image] if image else [])[0]
 
 
 def _measure(calibration: Calibration, frames: Sequence[Frame]) -> Measurement:
@@ -112,25 +137,39 @@ def _scan(
         fail(f"cannot scan disc sizes: {e}", 1)
 
 
-def _adopt_reference(image: Path, calibration_path: Path) -> Path:
-    """Copy ``image`` next to the calibration (unless it's already there); return its name."""
-    directory = calibration_path.parent.resolve()
-    source = image.resolve()
-    if source.parent == directory:
-        return Path(source.name)
-    name = f"reference-{datetime.now():%Y%m%d-%H%M%S}{source.suffix.lower() or '.jpg'}"
+def _reference_name(frame: Frame, image: Path | None, calibration_path: Path) -> Path:
+    """Where a new reference frame goes, relative to the calibration: an image already next to
+    the calibration is used in place; anything else is saved as ``reference-<time>.jpg``."""
+    if image is not None and image.resolve().parent == calibration_path.parent.resolve():
+        return Path(image.name)
+    suffix = (image.suffix.lower() if image is not None else "") or ".jpg"
+    return Path(f"reference-{frame.ts.astimezone(UTC):%Y%m%d-%H%M%S}{suffix}")
+
+
+def _save_reference(frame: Frame, name: Path, calibration_path: Path) -> None:
+    """Write the frame's bytes, exactly as received, as the reference (unless it's there)."""
+    target = calibration_path.parent / name
+    if target.exists():
+        return
     try:
-        directory.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, directory / name)
+        target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        fail(f"cannot copy the reference frame to {directory}: {e}")
-    return Path(name)
+        fail(f"cannot create {target.parent}: {e}")
+    assert frame.data is not None
+    write_bytes(target, frame.data)
 
 
 def _report(
-    calibration: Calibration, path: Path, frames: Sequence[Frame], scan: DiscScan | None = None
+    calibration: Calibration,
+    path: Path,
+    frames: Sequence[Frame],
+    scan: DiscScan | None = None,
+    reference: Frame | None = None,
 ) -> Measurement:
-    """Print what the calibration says, check it, and read ``frames`` with it."""
+    """Print what the calibration says, check it, and read ``frames`` with it.
+
+    ``reference`` is the reference frame, if it isn't on disk yet.
+    """
     echo = typer.echo
     ax, disc, anchor = calibration.axis, calibration.disc, calibration.anchor
     w, h = calibration.frame_size
@@ -150,7 +189,7 @@ def _report(
         disc_note = f"the reading holds for widths {w0:g}-{w1:g} and heights {h0:g}-{h1:g}"
     echo(f"disc         {disc.width:g} x {disc.height:g} px; {disc_note}")
 
-    reference = load_frames([calibration.reference_path])[0]
+    reference = reference or load_frames([calibration.reference_path])[0]
     check = check_anchor(reference.gray, calibration)
     echo(
         f"anchor       rect {list(anchor.rect)}, search {anchor.search} px; contrast "
@@ -217,8 +256,9 @@ def _finish(
     dry_run: bool,
     diagnostic: Path | None,
     scan: DiscScan | None = None,
+    reference: Frame | None = None,
 ) -> None:
-    m = _report(calibration, path, frames, scan)
+    m = _report(calibration, path, frames, scan, reference)
     if diagnostic is not None:
         write_image(diagnostic, render_diagnostic(frames[-1].gray, calibration, m))
     if dry_run:
@@ -241,7 +281,6 @@ def _note(text: str) -> str:
 
 @app.command()
 def grid(
-    image: OneImage,
     out: Annotated[Path, typer.Option("--out", help="Where to write the image (.jpg or .png).")],
     region: Annotated[
         Rect | None,
@@ -251,9 +290,11 @@ def grid(
         int | None, typer.Option(min=1, help="Grid spacing in frame px. Default: about 16 lines.")
     ] = None,
     width: Annotated[int, typer.Option(min=100, help="Output width in px.")] = 1600,
+    image: OneImage = None,
+    camera: OneCamera = False,
 ) -> None:
     """Write a frame with labelled coordinate gridlines, for reading off pixel positions."""
-    frame = load_frames([image])[0]
+    frame = _one_frame(image, camera)
     try:
         img = render_grid(frame.gray, region, step=step, width=width)
     except ValueError as e:
@@ -264,23 +305,15 @@ def grid(
 
 @app.command()
 def init(
-    image: Annotated[
-        Path,
-        typer.Option(
-            "--image",
-            exists=True,
-            dir_okay=False,
-            readable=True,
-            help="A full-size frame from the camera. It becomes the reference frame.",
-        ),
-    ],
     top: Annotated[
         XY, typer.Option(metavar="X Y", help="Disc centre at the top of its travel (frame px).")
     ],
     bottom: Annotated[
         XY, typer.Option(metavar="X Y", help="Disc centre at the bottom of its travel.")
     ],
-    calibration_path: CalibrationPath = DEFAULT_CALIBRATION,
+    image: OneImage = None,
+    camera: OneCamera = False,
+    calibration_path: CalibrationPath = None,
     half_width: Annotated[
         float | None,
         typer.Option(help="Strip half-width across the axis (px). Default: from the travel."),
@@ -298,10 +331,15 @@ def init(
     dry_run: DryRun = False,
     diagnostic: Diagnostic = None,
 ) -> None:
-    """Create a calibration from one frame and the two ends of the disc's travel."""
+    """Create a calibration from one frame and the two ends of the disc's travel.
+
+    The frame (--image, or --camera) becomes the reference frame, saved next to the calibration.
+    """
+    calibration_path = calibration_file(calibration_path)
     if calibration_path.exists() and not (force or dry_run):
         fail(f"{calibration_path} exists; use --force to replace it (the old one is kept as .bak)")
-    frame = load_frames([image])[0]
+    frame = _one_frame(image, camera)
+    reference = _reference_name(frame, image, calibration_path)
 
     def build(travel: Axis, disc_size: Disc) -> Calibration:
         axis = travel.updated(half_width=half_width or default_half_width(travel, disc_size))
@@ -310,14 +348,16 @@ def init(
             if anchor
             else default_anchor(axis, disc_size, frame.size)
         )
-        return Calibration.build(
+        cal = Calibration.build(
             calibration_path.parent,
-            reference_image=image.resolve(),
+            reference_image=reference,
             frame_size=frame.size,
             axis=axis,
             disc=disc_size,
             anchor=a,
         )
+        cal.use_reference(frame.gray)  # not saved yet
+        return cal
 
     try:
         travel = Axis(top=top, bottom=bottom, half_width=1.0)  # half-width is chosen in build()
@@ -338,19 +378,28 @@ def init(
         fail(_invalid(e))
 
     if not dry_run:
-        calibration = calibration.updated(reference_image=_adopt_reference(image, calibration_path))
-    _finish(calibration, calibration_path, [frame], dry_run=dry_run, diagnostic=diagnostic)
+        _save_reference(frame, reference, calibration_path)
+    _finish(
+        calibration,
+        calibration_path,
+        [frame],
+        dry_run=dry_run,
+        diagnostic=diagnostic,
+        reference=frame,
+    )
 
 
 @app.command()
 def show(
-    calibration_path: CalibrationPath = DEFAULT_CALIBRATION,
+    calibration_path: CalibrationPath = None,
     images: Images = None,
+    camera: Camera = False,
     diagnostic: Diagnostic = None,
 ) -> None:
     """Summarize and check a calibration, and read the gauge with it."""
+    calibration_path = calibration_file(calibration_path)
     calibration = load_calibration(calibration_path)
-    frames = _frames_or_reference(images, calibration)
+    frames = _frames(images, camera, calibration)
     m = _report(calibration, calibration_path, frames)
     if diagnostic is not None:
         write_image(diagnostic, render_diagnostic(frames[-1].gray, calibration, m))
@@ -358,12 +407,13 @@ def show(
 
 @app.command("axis")
 def set_axis(
-    calibration_path: CalibrationPath = DEFAULT_CALIBRATION,
+    calibration_path: CalibrationPath = None,
     top: Annotated[XY | None, typer.Option(metavar="X Y", help="New top of travel.")] = None,
     bottom: Annotated[XY | None, typer.Option(metavar="X Y", help="New bottom of travel.")] = None,
     half_width: Annotated[float | None, typer.Option(help="Strip half-width (px).")] = None,
     margin: Annotated[float | None, typer.Option(help="Strip extension past each end.")] = None,
     images: Images = None,
+    camera: Camera = False,
     dry_run: DryRun = False,
     diagnostic: Diagnostic = None,
 ) -> None:
@@ -372,6 +422,7 @@ def set_axis(
     Points recorded with `calibrate point` stay where the disc was; points given as `t` move
     with the axis.
     """
+    calibration_path = calibration_file(calibration_path)
     calibration = load_calibration(calibration_path)
     given = {"top": top, "bottom": bottom, "half_width": half_width, "margin": margin}
     changes: dict[str, Any] = {k: v for k, v in given.items() if v is not None}
@@ -384,18 +435,19 @@ def set_axis(
     moving = [p for p in calibration.points if p.t is not None]
     if moving and ("top" in changes or "bottom" in changes):
         typer.echo(f"note: {len(moving)} point(s) given as t move with the axis")
-    frames = _frames_or_reference(images, updated)
+    frames = _frames(images, camera, updated)
     _finish(updated, calibration_path, frames, dry_run=dry_run, diagnostic=diagnostic)
 
 
 @app.command("disc")
 def set_disc(
-    calibration_path: CalibrationPath = DEFAULT_CALIBRATION,
+    calibration_path: CalibrationPath = None,
     size: Annotated[XY | None, typer.Option(metavar="W H", help="Disc size (px).")] = None,
     scan: Annotated[
         bool, typer.Option("--scan", help="Choose the size that reads most consistently.")
     ] = False,
     images: Images = None,
+    camera: Camera = False,
     dry_run: DryRun = False,
     diagnostic: Diagnostic = None,
 ) -> None:
@@ -407,8 +459,9 @@ def set_disc(
     """
     if (size is None) == (not scan):
         fail("give either --size W H or --scan")
+    calibration_path = calibration_file(calibration_path)
     calibration = load_calibration(calibration_path)
-    frames = _frames_or_reference(images, calibration)
+    frames = _frames(images, camera, calibration)
     result = None
     try:
         if size is not None:
@@ -454,7 +507,7 @@ def _mark(scan: DiscScan, i: int, j: int) -> str:
 
 @app.command("anchor")
 def set_anchor(
-    calibration_path: CalibrationPath = DEFAULT_CALIBRATION,
+    calibration_path: CalibrationPath = None,
     rect: Annotated[
         Rect | None, typer.Option(metavar="X Y W H", help="Static area to align on.")
     ] = None,
@@ -468,10 +521,12 @@ def set_anchor(
         float | None, typer.Option(help="Shift (px) beyond which to suggest `rebase`.")
     ] = None,
     images: Images = None,
+    camera: Camera = False,
     dry_run: DryRun = False,
     diagnostic: Diagnostic = None,
 ) -> None:
     """Change the alignment anchor: a static, textured patch away from the disc."""
+    calibration_path = calibration_file(calibration_path)
     calibration = load_calibration(calibration_path)
     given = {
         "rect": rect,
@@ -486,7 +541,7 @@ def set_anchor(
         updated = calibration.updated(anchor=calibration.anchor.updated(**changes))
     except ValueError as e:
         fail(_invalid(e))
-    frames = _frames_or_reference(images, updated)
+    frames = _frames(images, camera, updated)
     _finish(updated, calibration_path, frames, dry_run=dry_run, diagnostic=diagnostic)
 
 
@@ -496,8 +551,9 @@ def point(
         float,
         typer.Option(min=0, max=1, help="What the gauge reads, as a fraction: 0.98 for 98%."),
     ],
-    calibration_path: CalibrationPath = DEFAULT_CALIBRATION,
+    calibration_path: CalibrationPath = None,
     images: Images = None,
+    camera: Camera = False,
     at: Annotated[
         XY | None,
         typer.Option(metavar="X Y", help="Disc centre (reference-frame px), instead of measuring."),
@@ -519,10 +575,11 @@ def point(
 
     Measures where the disc is in the frames and stores that position with the reading, replacing
     any point with the same reading. The position is fixed in the frame, so later axis edits don't
-    move it.
+    move it. With --camera, it measures the camera's view now.
     """
+    calibration_path = calibration_file(calibration_path)
     calibration = load_calibration(calibration_path)
-    frames = _frames_or_reference(images, calibration)
+    frames = _frames(images, camera, calibration)
     try:
         if remove:
             updated, removed = without_point(calibration, fraction)
@@ -572,8 +629,9 @@ def point(
 
 @app.command()
 def rebase(
-    image: OneImage,
-    calibration_path: CalibrationPath = DEFAULT_CALIBRATION,
+    image: OneImage = None,
+    camera: OneCamera = False,
+    calibration_path: CalibrationPath = None,
     search: Annotated[
         int | None,
         typer.Option(min=1, help="How far (px) to look for the anchor. Default: 10% of the frame."),
@@ -586,8 +644,9 @@ def rebase(
     Finds how far the view moved in the new frame and moves the calibration by the same amount.
     Handles shifts, not a changed zoom or angle; those need `calibrate init`.
     """
+    calibration_path = calibration_file(calibration_path)
     calibration = load_calibration(calibration_path)
-    frame = load_frames([image])[0]
+    frame = _one_frame(image, camera)
     try:
         calibration.check_frame_size(frame.size)
     except CalibrationError as e:
@@ -603,9 +662,19 @@ def rebase(
     typer.echo(
         f"the camera moved {shift.dx:+.1f}, {shift.dy:+.1f} px (anchor match {shift.score:.2f})"
     )
-    reference = image.resolve() if dry_run else _adopt_reference(image, calibration_path)
+    reference = _reference_name(frame, image, calibration_path)
     try:
         updated = shifted(calibration, shift.dx, shift.dy, reference)
     except ValueError as e:
         fail(f"can't move the calibration that far: {_invalid(e)}")
-    _finish(updated, calibration_path, [frame], dry_run=dry_run, diagnostic=diagnostic)
+    updated.use_reference(frame.gray)  # not saved yet
+    if not dry_run:
+        _save_reference(frame, reference, calibration_path)
+    _finish(
+        updated,
+        calibration_path,
+        [frame],
+        dry_run=dry_run,
+        diagnostic=diagnostic,
+        reference=frame,
+    )

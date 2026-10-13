@@ -4,10 +4,10 @@ Reads the float gauge on a residential heating-oil tank from an IP camera and pu
 to [Home Assistant](https://www.home-assistant.io/) over MQTT, with entities that appear
 automatically through MQTT discovery, the way Zigbee2MQTT's do.
 
-> **Status: early development (milestone M2).** Gauge reading works from image files, and the
-> `oiltank calibrate` commands create, check and adjust a calibration. The go2rtc source and MQTT
-> publishing are next; see [Roadmap](#roadmap). Sections marked *planned* describe behaviour that
-> isn't built yet.
+> **Status: early development (milestone M3).** `oiltank read` reads the gauge from go2rtc or
+> from image files, and the `oiltank calibrate` commands create, check and adjust a calibration.
+> MQTT publishing is next; see [Roadmap](#roadmap). Sections marked *planned* describe behaviour
+> that isn't built yet.
 
 ## How it works
 
@@ -74,17 +74,26 @@ model, running on CPU or an NVIDIA GPU, can replace it through config later.
 ## Quick start
 
 `docker-compose.yml` already has the hardened deployment settings: non-root, read-only root
-filesystem, no capabilities, `./config` mounted read-only and `./data` for state. The long-running
-`run` command, its healthcheck and `config.example.yaml` arrive in milestone M5. Setup will be:
+filesystem, no capabilities, and `./data` for state. All configuration comes from `.env`. The
+long-running `run` command and its healthcheck arrive in milestone M5. For now:
 
 ```sh
-mkdir -p config data && sudo chown 65532:65532 data
-cp config.example.yaml config/config.yaml        # then edit (M5)
-echo 'OILTANK__MQTT__PASSWORD=...' > .env          # secrets stay out of config.yaml
-docker compose up -d --build
+mkdir -p data && sudo chown 65532:65532 data
+cp .env.example .env                       # then fill in the camera URL, MQTT broker, ...
+docker compose build
+alias oiltank='docker compose run --rm oiltank'
+oiltank grab --out /data/frame.jpg         # check the camera: a full-size frame in ./data
 ```
 
-For now you can build the image and read the sample frames (repeat `--image` for a burst):
+Then [calibrate](#calibration), and read the gauge:
+
+```sh
+oiltank read
+# fetching 5 frame(s) from go2rtc.lan:1984, 2 s apart
+# level 97.8%  (t=0.817, confidence 1.00, indicator at x=2169.0 y=1047.9, 5 frame(s))
+```
+
+You can also try the sample frames without a camera or `.env`:
 
 ```sh
 docker build -t oiltank:dev .
@@ -93,17 +102,54 @@ docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev \
 # level 98.1%  (t=0.820, confidence 1.00, indicator at x=2168.0 y=1047.3, 2 frame(s))
 ```
 
-`read` also takes `--json` for a machine-readable result, `--annotate out.jpg` to write the
-compact gauge image that Home Assistant will show, and `--diagnostic check.jpg` (or `.png`) to
-write a larger image for [checking the calibration](#checking-a-calibration). It exits 0 for a
-good reading, 1 if there is no trustworthy reading, and 2 for configuration errors such as a
-missing calibration or a frame-size mismatch.
+`read` fetches a burst of frames from the camera, or reads image files given with `--image`
+(repeat it for a burst). It exits 0 for a good reading, 1 if there is no trustworthy reading or
+the camera can't be reached, and 2 for configuration errors such as a missing calibration, a
+frame-size mismatch or a wrong camera URL. Its other options:
+
+| Option | Meaning |
+|---|---|
+| `--url URL` | Fetch frames from this URL instead of `OILTANK_CAMERA_URL`. |
+| `--frames N` | Frames per burst. |
+| `--spacing S` | Seconds between frames. |
+| `--json` | Print a machine-readable result. |
+| `--annotate out.jpg` | Write the compact gauge image that Home Assistant will show. |
+| `--diagnostic check.jpg` | Write a larger image for [checking the calibration](#checking-a-calibration). |
+
+`oiltank grab --out PATH [--frames N]` saves frames exactly as the camera sent them. That's useful
+for calibration, for test samples, or for checking what go2rtc returns.
 
 ## Configuration
 
-*Planned.* Configuration will be a YAML file mounted read-only at `/config/config.yaml`. Any key
-can be overridden with an environment variable of the form `OILTANK__SECTION__KEY`, for example
-`OILTANK__MQTT__PASSWORD`. The full reference will go here.
+All settings come from environment variables named `OILTANK_<SECTION>_<KEY>`, normally kept in
+`.env`. Copy `.env.example`, which lists every setting with its default. `.env` is git-ignored, and
+Docker Compose passes it to the container whole.
+
+Variables set in your shell win over `.env`, and `.env` wins over the defaults. An empty value
+means "not set". An `OILTANK_` name that matches no setting is an error, which catches typos.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `OILTANK_CAMERA_URL` | none | An URL that returns one full-size JPEG per request. For go2rtc: `http://<host>:1984/api/frame.jpeg?src=<stream>`. |
+| `OILTANK_CAMERA_USERNAME`, `_PASSWORD` | none | Basic auth, if go2rtc's `api:` section sets it. Never put these in the URL. |
+| `OILTANK_CAMERA_BURST_FRAMES` | 5 | Frames per reading, combined by median. |
+| `OILTANK_CAMERA_BURST_SPACING_S` | 2.0 | Seconds between frames. Use at least the camera's keyframe interval: duplicate frames are dropped and refetched. |
+| `OILTANK_CAMERA_TIMEOUT_S` | 15 | Per request. |
+| `OILTANK_CAMERA_RETRIES`, `_RETRY_BACKOFF_S` | 3, 2.0 | Retries for timeouts, connection errors and HTTP 5xx. The wait doubles each time. |
+| `OILTANK_CAMERA_VERIFY_TLS` | true | For `https://` URLs. |
+| `OILTANK_MQTT_HOST`, `_PORT` | none, 1883 | Home Assistant's MQTT broker (M4). |
+| `OILTANK_MQTT_USERNAME`, `_PASSWORD`, `_TLS` | none, none, false | |
+| `OILTANK_MQTT_CLIENT_ID`, `_TOPIC_PREFIX`, `_DISCOVERY_PREFIX` | oiltank, oiltank, homeassistant | |
+| `OILTANK_DEVICE_ID`, `_NAME` | oil_tank, Oil Tank | How the tank appears in Home Assistant (M4). |
+| `OILTANK_TANK_CAPACITY`, `_UNIT` | 260, gal | Usable capacity when the gauge reads F (M5). |
+| `OILTANK_TANK_RESERVE` | 0 | "Days left" counts down to this volume (M5). |
+| `OILTANK_SERVICE_INTERVAL_MIN`, `_MIN_CONFIDENCE` | 15, 0.5 | Reading interval and acceptance threshold (M5). |
+| `OILTANK_DATA_DIR` | data | Calibration, history and archive. Relative to the working directory, which is `/` in the container, so `data` means `./data` from a checkout and `/data` (the same directory, mounted) in the container. |
+| `OILTANK_LOG_LEVEL` | INFO | DEBUG, INFO, WARNING or ERROR. `oiltank -v` logs at DEBUG. |
+| `TZ` | | The container's timezone, used for timestamps on the gauge image. |
+
+Paths you pass to commands inside the container are relative to `/`, whose only writable directory
+is `/data`. So write outputs as `/data/...`.
 
 ## Calibration
 
@@ -135,13 +181,13 @@ The commands below run in the container, where `./data` is mounted at `/data` an
 alias oiltank='docker compose run --rm oiltank'
 ```
 
-From a checkout, `uv run oiltank ... -c data/calibration.yaml` does the same with local paths.
+From a checkout, `uv run oiltank ...` uses the same `./data`, with local paths such as
+`data/frame.jpg`.
 
-1. **Save a full-size frame** into `./data`. For now, fetch it from go2rtc yourself; milestone M3
-   adds `--url`. Use `sudo` if `./data` is owned by 65532:
+1. **Save a full-size frame** from the camera into `./data`:
 
    ```sh
-   sudo curl -o data/frame.jpg 'http://<go2rtc-host>:1984/api/frame.jpeg?src=oil_tank'
+   oiltank grab --out /data/frame.jpg
    ```
 
 2. **Find the ends of the disc's travel.** Draw a coordinate grid over the frame, then zoom in on
@@ -168,20 +214,25 @@ From a checkout, `uv run oiltank ... -c data/calibration.yaml` does the same wit
    - copies the frame next to the calibration as the reference;
    - prints the report.
 
-   `--disc W H`, `--anchor X Y W H` and `--half-width` override the defaults.
+   `--disc W H`, `--anchor X Y W H` and `--half-width` override the defaults. `--camera`
+   takes the frame straight from the camera instead of `--image`.
 
-4. **Check it.** Run `oiltank calibrate show --diagnostic /data/check.jpg` and look at the image
-   (see [Checking a calibration](#checking-a-calibration)).
+4. **Check it.** Run `oiltank calibrate show --camera --diagnostic /data/check.jpg` and look at
+   the image (see [Checking a calibration](#checking-a-calibration)).
 
 5. **Tell it what the gauge reads.** Do this right away if you know the level, or later when you
    read the gauge by eye or get a delivery ticket:
 
    ```sh
-   oiltank calibrate point --fraction 0.98 --note "a week after a fill"
+   oiltank calibrate point --camera --fraction 0.98 --note "a week after a fill"
    ```
 
-   This measures where the disc is, on the reference frame unless you give `--image`, and stores
-   that position with the reading. See [Points](#points-the-scale).
+   This measures where the disc is now and stores that position with the reading. See
+   [Points](#points-the-scale).
+
+The commands that measure (`show`, `point`, `axis`, `disc` and `anchor`) use the reference frame
+by default, `--image` files if given, or a burst from the camera with `--camera`. `init`, `rebase`
+and `grid` take one frame, from `--image` or `--camera`.
 
 ### The report
 
@@ -271,10 +322,11 @@ Past `recalibrate_shift` (20 px), readings carry a `recalibrate_suggested` notic
 moves too far, readings fail with `camera_moved`.
 
 ```sh
-oiltank calibrate rebase --image /data/new-frame.jpg
+oiltank calibrate rebase --camera
 ```
 
-`rebase` finds the anchor in a new frame, searching 10% of the frame width by default. It needs a
+`rebase` finds the anchor in a new frame (from the camera, or `--image`), searching 10% of the
+frame width by default. It needs a
 strong match (0.9 or better), then moves the axis, anchor and `at` points by the same shift, and
 makes the new frame the reference. It handles shifts only. If the zoom or angle has changed, start
 again with `init`.
@@ -328,8 +380,20 @@ rather than assuming the top of the dome is "full".
 
 ## Troubleshooting
 
-*Planned.* This will cover the `problem` reasons (`camera_unreachable`, `camera_moved`,
-`low_confidence`, resolution mismatch) and how to check discovery with `mosquitto_sub`.
+Camera problems, from `read`, `grab` or `--camera`:
+
+| Message | Cause |
+|---|---|
+| `refused the request (HTTP 401)` | go2rtc's API wants a login. Set `OILTANK_CAMERA_USERNAME` and `OILTANK_CAMERA_PASSWORD`. |
+| `not found (HTTP 404) (is there a go2rtc stream called ...?)` | The `src=` name in the URL doesn't match a stream in go2rtc's config. |
+| `expected an image ..., got text/html` | The URL isn't go2rtc's `/api/frame.jpeg` endpoint. |
+| `camera unreachable: cannot reach ...` / `didn't answer within ...` | go2rtc is down or the host name doesn't resolve, even after retries. |
+| `answered HTTP 500: ...` | go2rtc couldn't get a frame from the camera. go2rtc's message follows. |
+| `frame is 640x360 but the calibration was made at 3840x2160` | The URL serves a substream or a snapshot rather than the main stream. |
+| `unknown setting(s) ...` | A misspelt `OILTANK_` name in `.env` or the shell. |
+
+*Planned:* the `problem` reasons Home Assistant will show (`camera_unreachable`, `camera_moved`,
+`low_confidence`), and how to check discovery with `mosquitto_sub`.
 
 ## Development
 
@@ -355,7 +419,14 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
 - `tests/cv/test_synthetic.py`: the disc moved along its travel or removed; noise, JPEG, blur and
   gain/gamma; camera nudges and large moves; 1280×720 and 640×360 frames;
 - `tests/cv/test_calibrate.py`: the calibration tools (disc-size scan, anchor check, rebase) on
-  the real frames.
+  the real frames;
+- `tests/unit/test_http_source.py` and `test_cli_camera.py`: the go2rtc source against a mocked
+  transport, and the camera commands against a fake go2rtc on localhost (auth, retries, timeouts,
+  wrong stream, duplicates);
+- `tests/unit/test_config.py`: settings, `.env` and unknown-name detection.
+
+Tests never read your `.env` or `OILTANK_*` variables: they run in an empty working directory with
+those variables removed.
 
 New sample frames have to be listed as day or night in `tests/conftest.py`; a test fails until they
 are.
@@ -386,7 +457,7 @@ non-editable virtualenv, which are copied into
 - [x] **M0** Project skeleton, tooling, distroless image
 - [x] **M1** Geometry, calibration model, classical reader, annotated output
 - [x] **M2** Calibration CLI
-- [ ] **M3** go2rtc HTTP frame source
+- [x] **M3** go2rtc HTTP frame source
 - [ ] **M4** MQTT discovery, state and availability
 - [ ] **M5** Service loop: filtering, history, refill detection, usage rate, Read now button,
       gauge image, healthcheck

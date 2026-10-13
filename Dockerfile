@@ -45,7 +45,9 @@ ENV PATH=/app/.venv/bin:$PATH \
 
 # distroless :nonroot already runs as 65532:65532; restated so it is explicit.
 USER 65532:65532
-WORKDIR /data
+# Run from / so a relative OILTANK_DATA_DIR of `data` (the default) means /data here and ./data in a
+# checkout: the same directory, through the Compose bind mount. One .env works for both.
+WORKDIR /
 
 ENTRYPOINT ["/app/.venv/bin/oiltank"]
 CMD ["--help"]

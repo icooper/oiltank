@@ -298,6 +298,13 @@ class Calibration(_Model):
             self._anchor_patch = np.ascontiguousarray(ref.gray[y : y + h, x : x + w])
         return self._anchor_patch
 
+    def use_reference(self, gray: GrayImage) -> None:
+        """Take the anchor patch from ``gray`` rather than reading ``reference_image`` (for a
+        reference frame that is still only in memory, e.g. fetched from the camera)."""
+        self.check_frame_size((gray.shape[1], gray.shape[0]))
+        x, y, w, h = self.anchor.rect
+        self._anchor_patch = np.ascontiguousarray(gray[y : y + h, x : x + w])
+
     def check_frame_size(self, size: tuple[int, int]) -> None:
         if tuple(size) != tuple(self.frame_size):
             w, h = size

@@ -30,6 +30,8 @@ uv run mypy                              # strict; covers src/ and tests/
 uv run oiltank --help                    # the CLI
 uv run oiltank read -c samples/calibration.yaml --image samples/frame0.jpg
 uv run oiltank calibrate show -c samples/calibration.yaml --diagnostic check.jpg
+uv run oiltank read -c samples/calibration.yaml   # live camera, configured in .env
+uv run oiltank grab --out frame.jpg               # one frame, exactly as go2rtc sends it
 uv add <pkg> / uv add --dev <pkg>        # dependencies; commit uv.lock alongside pyproject.toml
 docker build -t oiltank:dev .            # distroless runtime image (docker-compose.yml for deploys)
 docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev read -c /samples/calibration.yaml --image /samples/frame0.jpg
@@ -47,8 +49,14 @@ flowchart LR
     calibration --> filter["filter<br/>filter.py"] --> publish["publish<br/>publish/"]
 ```
 
-- `sources/`: `FrameSource.grab(n, spacing_s) -> list[Frame]`. The HTTP source talks to go2rtc,
-  and `files.py` loads images from disk.
+- `config.py`: settings from environment variables and `.env` (pydantic-settings, which reads
+  `.env` with python-dotenv). See the conventions below.
+- `sources/`: `FrameSource.grab(n, spacing_s) -> list[Frame]`. `http.py` talks to go2rtc's
+  `/api/frame.jpeg`. It retries timeouts, connection errors and 5xx with backoff, and doesn't
+  retry 401/403/404 or non-image responses (`CameraConfigError`). Bursts drop byte-identical
+  frames and stop early, keeping what they have, if the camera drops out. `files.py` loads images
+  from disk. Frames keep their encoded bytes (`Frame.data`), so a camera frame can become the
+  reference without re-encoding.
 - `geometry.py`: aligns each frame to an anchor patch of static parts (to tolerate camera bumps)
   and rectifies the gauge axis into an upright strip.
 - `readers/`: `GaugeReader.read(strip) -> Reading`. **Readers return the gauge position `t` in
@@ -80,8 +88,14 @@ Not every module exists yet; the README's roadmap and the milestone list track p
 
 - Diagrams in README.md and CLAUDE.md are Mermaid code blocks, never ASCII art.
 - Strict typing (mypy strict). Prefer frozen dataclasses, and `pathlib` over `os.path`.
-- Config comes from pydantic-settings: a YAML file with env overrides of the form
-  `OILTANK__SECTION__KEY` (e.g. `OILTANK__MQTT__PASSWORD`).
+- Settings are `OILTANK_<SECTION>_<KEY>` with **single underscores** (e.g.
+  `OILTANK_CAMERA_BURST_FRAMES`). Sections are split off at the first underscore
+  (`env_nested_max_split=1`). So sections stay one level deep, and no top-level setting may start
+  with a section name and `_`; `test_config.py` enforces this. Unknown `OILTANK_` names are errors.
+  Every setting must also be listed in `.env.example`; a test checks that too.
+- `.env` is the whole container configuration. Compose passes it through, with no `environment:`
+  block. Only the human writes it, and it holds real credentials: never print their values, copy
+  the file, or commit it. To check it, load `Settings` and print which fields are set.
 - Adding or changing an HA entity means editing `publish/discovery.py` and updating its golden JSON
   test.
 - `opencv-python-headless` is OpenCV **5.x**. `cv2` returns loosely typed `MatLike`; convert with
@@ -102,11 +116,14 @@ Not every module exists yet; the README's roadmap and the milestone list track p
 - Synthetic CV tests are built from the sample strip: moving the disc, adding noise, JPEG
   re-encoding, frame shifts, and removing the disc.
 - Integration tests are marked `integration` and need Docker (mosquitto).
+- Tests never see the developer's `.env` or `OILTANK_*` variables: the autouse `isolated_settings`
+  fixture removes them and runs each test in an empty working directory. Camera tests use
+  `httpx.MockTransport` (`test_http_source.py`) or a fake go2rtc on localhost (`test_cli_camera.py`).
 
 ## Don'ts
 
 - Never put secrets, camera or go2rtc URLs with credentials, or `/data` contents in files meant for
-  the repo.
+  the repo. Real hosts and credentials live only in `.env`.
 - Keep sample and test images small and few.
 - The container must stay distroless and non-root (uid 65532), and must work with a read-only root
   filesystem.
