@@ -34,9 +34,15 @@ uv run oiltank --help
 work without a camera or `.env`:
 
 ```sh
-uv run oiltank read -c samples/calibration.yaml --image samples/frame0.jpg \
-  --annotate gauge.jpg --diagnostic check.jpg
-uv run oiltank calibrate show -c samples/calibration.yaml --diagnostic check.jpg
+uv run oiltank read \
+  -c samples/calibration.yaml \
+  --image samples/frame0.jpg \
+  --annotate gauge.jpg \
+  --diagnostic check.jpg
+
+uv run oiltank calibrate show \
+  -c samples/calibration.yaml \
+  --diagnostic check.jpg
 ```
 
 ## Code layout
@@ -117,8 +123,12 @@ A locally built image reports version `0.0.0`; see [How a release works](#how-a-
 The images in `docs/images/` are generated from the samples:
 
 ```sh
-uv run oiltank read -c samples/calibration.yaml --image samples/frame0.jpg --image samples/frame1.jpg \
-  --annotate docs/images/gauge.jpg --diagnostic docs/images/diagnostic.jpg
+uv run oiltank read \
+  -c samples/calibration.yaml \
+  --image samples/frame0.jpg \
+  --image samples/frame1.jpg \
+  --annotate docs/images/gauge.jpg \
+  --diagnostic docs/images/diagnostic.jpg
 ```
 
 Then shrink the diagnostic to 80% at JPEG quality 82.
@@ -150,26 +160,32 @@ flowchart LR
         lint["Lint<br/>ruff, mypy"]
         test["Test<br/>pytest, integration"]
         img["Image<br/>build amd64 + arm64 natively,<br/>smoke test, no push"]
-        title["PR title<br/>parses as PSR would?"]
+        title["PR title<br/>parses as PSR would"]
     end
+    lint -->|lint| gate
+    test -->|"test<br/>integration"| gate
+    img -->|"image / amd64<br/>image / arm64"| gate
+    title -->|pr-title| gate
+    gate(["squash-merge<br/>(branch up to date<br/>with main)"]) --> rel
     subgraph main ["On push to main: Release"]
-        l2["Lint"] --> rel
-        t2["Test"] --> rel
         rel["release<br/>PSR: tag vX.Y.Z,<br/>GitHub Release"] -->|released| build["image (amd64, arm64)<br/>stamp version, smoke test,<br/>push by digest"]
         build --> merge["merge<br/>multi-arch manifest:<br/>X.Y.Z, X.Y, X, latest"]
     end
 ```
 
+The arrow labels are the status checks the `main` ruleset requires. They're job names, so renaming
+a job means updating the ruleset too.
+
 ### Workflows
 
 | Workflow | Runs on | Does |
 |---|---|---|
-| `lint.yml` (Lint) | PRs; called by Release | `ruff format --check`, `ruff check`, `mypy` |
-| `test.yml` (Test) | PRs; called by Release | `pytest`, and `pytest -m integration` as a parallel job |
+| `lint.yml` (Lint) | PRs | `ruff format --check`, `ruff check`, `mypy` |
+| `test.yml` (Test) | PRs | `pytest`, and `pytest -m integration` as a parallel job |
 | `image.yml` (Image) | PRs | Calls `build-image.yml` without pushing |
 | `build-image.yml` | Called by Image and Release | Builds on native amd64 and arm64 runners and smoke-tests each image, locked down, on the sample frames. For a release it stamps the version, pushes by digest, and publishes the multi-arch tags |
 | `pr-title.yml` (PR title) | PRs, including title edits | Checks the title is a conventional commit |
-| `release.yml` (Release) | Pushes to `main` | Lint and Test, then python-semantic-release, then the image if there was a release |
+| `release.yml` (Release) | Pushes to `main` | python-semantic-release, then the image if there was a release |
 
 ### How a release works
 
