@@ -1,8 +1,11 @@
 name: Release
 
-# On every merge to main: lint and test, then let python-semantic-release decide from the
-# conventional commit messages whether this is a release. If it is, PSR tags the merge commit and
-# creates the GitHub Release, and the images are built and published.
+# On every merge to main, python-semantic-release decides from the conventional commit messages
+# whether this is a release. If it is, PSR tags the merge commit and creates the GitHub Release,
+# and the images are built and published.
+#
+# Lint and Test don't run again here. The ruleset requires them on every PR, and requires the PR to
+# be up to date with main before it merges, so the squashed commit has the tree they passed.
 #
 # Releases are tag-only. main needs signed commits through PRs, so PSR never pushes a commit; the
 # ruleset only covers the branch, so GITHUB_TOKEN can push the tag. Tags and releases made with
@@ -28,18 +31,7 @@ env:
   PSR_EXCLUDE_NEWER: "2026-09-29"
 
 jobs:
-  lint:
-    uses: ./.github/workflows/lint.yml
-    permissions:
-      contents: read
-
-  test:
-    uses: ./.github/workflows/test.yml
-    permissions:
-      contents: read
-
   release:
-    needs: [lint, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -53,7 +45,7 @@ jobs:
           fetch-depth: 0 # PSR reads the tags and the history since the last release
           persist-credentials: false # PSR pushes the tag with GH_TOKEN itself
 
-      # The tag must land on the commit that was linted and tested, not a newer one.
+      # The tag must land on the commit whose PR checks passed, not a newer one.
       - name: Check HEAD is the commit that triggered this run
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 

@@ -122,9 +122,10 @@ GitHub Actions, in `.github/workflows/`; CONTRIBUTING.md has the diagram.
   `image.yml` and `pr-title.yml`. `image.yml` calls `build-image.yml`, which builds on native
   `ubuntu-24.04` and `ubuntu-24.04-arm` runners and smoke-tests each image (locked down, on the
   sample frames) before anything is pushed.
-- `release.yml` runs on every push to `main`. It calls Lint and Test, then python-semantic-release
-  (PSR), then `build-image.yml` with `push: true` if PSR released. That job publishes
-  `ghcr.io/icooper/oiltank` as `X.Y.Z`, `X.Y`, `X` and `latest`.
+- `release.yml` runs on every push to `main`. It runs python-semantic-release (PSR), then
+  `build-image.yml` with `push: true` if PSR released. That job publishes `ghcr.io/icooper/oiltank`
+  as `X.Y.Z`, `X.Y`, `X` and `latest`. It doesn't re-run Lint and Test: the ruleset requires them
+  with strict ("up to date") status checks, so the merged commit is the one they passed.
 - **Releases are tag-only.** `main` needs signed commits through PRs, so CI never commits. PSR
   (`version --no-commit --tag`) tags the merge commit and creates the GitHub Release with
   `GITHUB_TOKEN`. **The version in `pyproject.toml` is a placeholder (`0.0.0`); never edit it.**

@@ -2,15 +2,12 @@ name: Lint
 
 on:
   pull_request:
-  workflow_call: # from release.yml, before tagging
 
 permissions: {}
 
-# A literal prefix, not github.workflow: in a called workflow that is the caller's name, so Lint
-# and Test would share a group when Release calls them both.
 concurrency:
-  group: lint-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   lint:
