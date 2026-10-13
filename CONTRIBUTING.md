@@ -211,8 +211,10 @@ uvx --exclude-newer 2026-09-29 --from python-semantic-release==10.7.0 semantic-r
   PyPI was on that date. To upgrade, bump both together (the date a week or two after the PSR
   release), run the preview above, and check that the pattern in `pr-title.yml` still matches
   PSR's conventional parser (`commit_parser/conventional/parser.py` and `options.py`).
-- **uv** is `0.11.11` in the Dockerfile and in the workflows' `setup-uv` steps. Change them
-  together.
+- **uv** is pinned once, as `[tool.uv] required-version` in `pyproject.toml`. The workflows'
+  `setup-uv` steps read it from there. The Dockerfile can't, so its `UV_VERSION` default has to
+  match, and `tests/unit/test_uv_version.py` checks that it does. uv refuses to run with any other
+  version, so to upgrade, bump both, then `uv self update <version>`.
 
 ## Roadmap
 

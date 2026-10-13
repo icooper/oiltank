@@ -137,8 +137,9 @@ GitHub Actions, in `.github/workflows/`; CONTRIBUTING.md has the diagram.
   conventional parser; re-check it when upgrading PSR.
 - Pinning: actions by full commit SHA with a `# vX.Y.Z` comment (Dependabot updates them); PSR by
   `PSR_VERSION` plus `PSR_EXCLUDE_NEWER` in `release.yml`, bumped together, because unpinned
-  transitive dependencies (GitPython) have broken it; uv `0.11.11` in the Dockerfile and every
-  `setup-uv` step, changed together.
+  transitive dependencies (GitPython) have broken it; uv once, as `[tool.uv] required-version` in
+  `pyproject.toml`. setup-uv reads it from there, so never give a `setup-uv` step a `version`.
+  The Dockerfile's `ARG UV_VERSION` default must match; `test_uv_version.py` checks both.
 - Every workflow sets `permissions: {}` and grants per job, except `build-image.yml`, which has no
   `permissions` on purpose: its jobs inherit the caller's grant (PRs `contents: read`, releases
   also `packages: write`), and a called workflow can only narrow it. Concurrency groups use a

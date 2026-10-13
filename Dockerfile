@@ -1,9 +1,13 @@
 # syntax=docker/dockerfile:1
 
+# Must equal [tool.uv] required-version in pyproject.toml (tests/unit/test_uv_version.py).
+ARG UV_VERSION=0.11.11
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
 # ---- builder: uv-managed CPython + a non-editable venv -------------------------------------
 FROM debian:bookworm-slim AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.11 /uv /uvx /bin/
+COPY --from=uv /uv /uvx /bin/
 
 # Install a uv-managed (python-build-standalone) interpreter at a fixed path so it can be copied
 # verbatim into the distroless runtime, where the venv's `python` symlink still resolves.

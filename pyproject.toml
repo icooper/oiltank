@@ -70,6 +70,10 @@ markers = [
 ]
 
 [tool.uv]
+# The uv version for everyone: setup-uv in the workflows reads it from here, the Dockerfile's
+# UV_VERSION default must match (tests/unit/test_uv_version.py), and uv refuses to run with any
+# other version, so a newer uv can't rewrite uv.lock in a way CI and Docker don't understand.
+required-version = "==0.11.11"
 # Rebuild the (non-editable) package when source changes, not only when pyproject.toml does;
 # otherwise Docker builds with a warm uv cache install a stale wheel.
 cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]
