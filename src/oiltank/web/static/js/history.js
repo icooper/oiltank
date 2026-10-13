@@ -53,6 +53,7 @@ export class HistoryView {
     this.wantAt = at;
     this.markRange();
     this.layout();
+    this.render(); // with what's loaded: coming back to the view may need no new data
     this.load();
   }
 
@@ -318,10 +319,14 @@ export class HistoryView {
     });
     // Redraw on the next frame, and only for a new width: resizing the canvases inside the
     // observer's callback would set off another round of it.
+    // Hidden (another view showing), the plots have no width: ignore that, and lay out again
+    // when the view opens.
     new ResizeObserver(() => {
       cancelAnimationFrame(this.resizeFrame);
       this.resizeFrame = requestAnimationFrame(() => {
-        if (!this.scale || Math.max(200, this.plots.clientWidth) === this.width) return;
+        const width = this.plots.clientWidth;
+        if (!this.scale || this.root.hidden || width === 0) return;
+        if (Math.max(200, width) === this.width) return;
         this.layout();
         this.render();
       });
