@@ -39,7 +39,12 @@ wheel; flag the problem instead.
 
 ## Architecture
 
-Pipeline: **source → align → rectify → reader → calibration → filter → publish**.
+```mermaid
+flowchart LR
+    source["source<br/>sources/"] --> align["align<br/>geometry.py"] --> rectify["rectify<br/>geometry.py"]
+    rectify --> reader["reader<br/>readers/"] --> calibration["calibration<br/>calibration.py"]
+    calibration --> filter["filter<br/>filter.py"] --> publish["publish<br/>publish/"]
+```
 
 - `sources/`: `FrameSource.grab(n, spacing_s) -> list[Frame]`. The HTTP source talks to go2rtc,
   and `files.py` loads images from disk.
@@ -59,6 +64,7 @@ Not every module exists yet; the README's roadmap and the milestone list track p
 
 ## Conventions
 
+- Diagrams in README.md and CLAUDE.md are Mermaid code blocks, never ASCII art.
 - Strict typing (mypy strict). Prefer frozen dataclasses, and `pathlib` over `os.path`.
 - Config comes from pydantic-settings: a YAML file with env overrides of the form
   `OILTANK__SECTION__KEY` (e.g. `OILTANK__MQTT__PASSWORD`).
@@ -70,8 +76,15 @@ Not every module exists yet; the README's roadmap and the milestone list track p
 ## Testing
 
 - Golden images are `samples/frame0.jpg` … `frame5.jpg`: native 3840×2160 go2rtc frames with the
-  tank near full. The disc's centre is at **y ≈ 1048 ± 4** in all six, and they agree within ~2 px.
-  The gauge axis runs roughly from (2162, 1000) to (2162, 1172).
+  tank at about 98% (owner's figure, a week after a fill). The disc's centre is at **x ≈ 2168,
+  y ≈ 1048 ± 4** in all six, and they agree within ~2 px. `samples/calibration.yaml` is their
+  calibration, and the owner tunes it by hand. Its axis bounds the physical travel, from the dome
+  cap down to the base ring. Its points are the default E at the bottom of travel and the owner's
+  98% at the disc. The mapping extends the end segments, so F lands just above the disc
+  (y ≈ 1045). Tests derive expected `t` values from the calibration (`axis.t_of`), never from
+  hard-coded endpoints. They pin only the owner's reading: the burst reads 98%.
+- A point's `t` is relative to the axis, so editing the axis endpoints moves `t` points. `at`
+  points (disc centre in frame px) don't move.
 - Synthetic CV tests are built from the sample strip: moving the disc, adding noise, JPEG
   re-encoding, frame shifts, and removing the disc.
 - Integration tests are marked `integration` and need Docker (mosquitto).

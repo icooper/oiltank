@@ -222,3 +222,7 @@ __marimo__/
 # oiltank runtime state (mounted into the container; never commit)
 /config/
 /data/
+
+# Images written by the README's example commands
+/gauge.jpg
+/check.jpg

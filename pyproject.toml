@@ -65,3 +65,8 @@ addopts = "-ra -m 'not integration'"
 markers = [
     "integration: needs Docker (mosquitto); run with `uv run pytest -m integration`",
 ]
+
+[tool.uv]
+# Rebuild the (non-editable) package when source changes, not only when pyproject.toml does;
+# otherwise Docker builds with a warm uv cache install a stale wheel.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]
