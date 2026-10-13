@@ -7,8 +7,9 @@ calibration's axis, so each reading also records which axis that was (its epoch,
 too, so "last fill" survives after it drops out of the replay window.
 """
 
+import logging
 import sqlite3
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
@@ -18,6 +19,8 @@ from oiltank.calibration import Axis
 from oiltank.epochs import AxisEpoch, Change, carry, successor
 from oiltank.filter import Fill, Observation
 from oiltank.model import Problem
+
+log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2
 _SCHEMA = """
@@ -55,20 +58,67 @@ CREATE TABLE IF NOT EXISTS epochs (
 _EPOCH_COLUMNS = "id, reference, top_x, top_y, bottom_x, bottom_y, scale, shift, change"
 
 
+@dataclass(frozen=True, slots=True)
+class StoredReading:
+    """A reading attempt as stored, with what the filter made of it."""
+
+    ts: datetime
+    fraction: float | None
+    confidence: float
+    t: float | None
+    problem: Problem | None
+    accepted: bool
+    frames: int
+    epoch: int | None
+
+    def observation(self) -> Observation:
+        return Observation(self.ts, self.fraction, self.confidence, self.t, self.problem)
+
+
 class History:
     def __init__(self, path: Path) -> None:
+        """Open (creating or upgrading) the history for writing: the service's own connection.
+
+        Other readers, such as the web UI, use :meth:`open_readonly`; WAL mode lets them read
+        while the service writes.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
         # Only the service loop uses it, but that loop may run on a thread other than its creator.
         self._db = sqlite3.connect(path, check_same_thread=False)
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
         if version > SCHEMA_VERSION:
             raise RuntimeError(f"{path} is from a newer oiltank (schema {version})")
+        mode = self._db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        if mode != "wal":  # e.g. on a network filesystem
+            log.warning("%s can't use WAL mode (%s); readers may wait for the service", path, mode)
+        self._db.execute("PRAGMA synchronous=NORMAL")
+        self._db.execute("PRAGMA busy_timeout=5000")
         with self._db:
             self._db.executescript(_SCHEMA)
             columns = {row[1] for row in self._db.execute("PRAGMA table_info(readings)")}
             if "epoch" not in columns:  # schema 1
                 self._db.execute("ALTER TABLE readings ADD COLUMN epoch INTEGER")
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    @classmethod
+    def open_readonly(cls, path: Path) -> Self:
+        """Open the history to read only: no schema changes, safe alongside the service.
+
+        Raises OSError if there's no history, and RuntimeError if it hasn't been upgraded to this
+        version's schema (the service does that when it starts).
+        """
+        if not path.is_file():
+            raise FileNotFoundError(f"no history at {path}")
+        uri = path.resolve().as_uri()
+        try:
+            db = _check_version(_connect(f"{uri}?mode=ro"), path)
+        except sqlite3.OperationalError:
+            # A read-only directory (a copy, mounted read-only) can't hold WAL's shared-memory
+            # file; read the database file alone instead.
+            db = _check_version(_connect(f"{uri}?immutable=1"), path)
+        history = cls.__new__(cls)
+        history._db = db
+        return history
 
     def close(self) -> None:
         self._db.close()
@@ -114,31 +164,46 @@ class History:
                 (fill.ts.isoformat(), fill.before, fill.after),
             )
 
-    def observations(self, since: datetime, *, onto: AxisEpoch | None = None) -> list[Observation]:
-        """Reading attempts from ``since`` on, oldest first.
+    def observations(
+        self, since: datetime, until: datetime | None = None, *, onto: AxisEpoch | None = None
+    ) -> list[Observation]:
+        """Reading attempts from ``since`` (until before ``until``), oldest first.
 
         With ``onto``, each ``t`` is carried onto that epoch's axis. The fractions are as stored;
         recompute them from ``t`` with :meth:`Observation.recalibrated`.
         """
-        rows = self._db.execute(
-            "SELECT ts, fraction, confidence, t, problem, epoch FROM readings WHERE ts >= ? "
-            "ORDER BY ts, id",
-            (since.isoformat(),),
+        return [r.observation() for r in self.readings(since, until, onto=onto)]
+
+    def readings(
+        self, since: datetime, until: datetime | None = None, *, onto: AxisEpoch | None = None
+    ) -> list[StoredReading]:
+        """Like :meth:`observations`, with what the filter made of each and its epoch."""
+        query = (
+            "SELECT ts, fraction, confidence, t, problem, accepted, frames, epoch FROM readings "
+            "WHERE ts >= ?"
         )
+        args = [since.isoformat()]
+        if until is not None:
+            query += " AND ts < ?"
+            args.append(until.isoformat())
+        rows = self._db.execute(query + " ORDER BY ts, id", args)
         epochs = {} if onto is None else self.epochs()
         out = []
-        for ts, fraction, confidence, t, problem, epoch in rows:
+        for ts, fraction, confidence, t, problem, accepted, frames, epoch in rows:
             src = epochs.get(epoch)
             if onto is not None and src is not None and t is not None and epoch != onto.id:
                 a, b = carry(src, onto)
                 t = a * t + b
             out.append(
-                Observation(
+                StoredReading(
                     ts=datetime.fromisoformat(ts),
                     fraction=fraction,
                     confidence=confidence,
                     t=t,
                     problem=None if problem is None else Problem(problem),
+                    accepted=bool(accepted),
+                    frames=frames,
+                    epoch=epoch,
                 )
             )
         return out
@@ -209,8 +274,15 @@ class History:
         ts, before_level, after_level = row
         return Fill(ts=datetime.fromisoformat(ts), before=before_level, after=after_level)
 
-    def fills(self) -> list[Fill]:
-        rows = self._db.execute("SELECT ts, before, after FROM fills ORDER BY ts")
+    def fills(self, since: datetime | None = None, until: datetime | None = None) -> list[Fill]:
+        query, args = "SELECT ts, before, after FROM fills WHERE 1", []
+        if since is not None:
+            query += " AND ts >= ?"
+            args.append(since.isoformat())
+        if until is not None:
+            query += " AND ts < ?"
+            args.append(until.isoformat())
+        rows = self._db.execute(query + " ORDER BY ts", args)
         return [Fill(datetime.fromisoformat(ts), b, a) for ts, b, a in rows]
 
     def count(self) -> int:
@@ -222,3 +294,24 @@ def _epoch(row: tuple[int, str, float, float, float, float, float, float, str]) 
     return AxisEpoch(
         reference, (top_x, top_y), (bottom_x, bottom_y), scale, shift, Change(change), id_
     )
+
+
+def _check_version(db: sqlite3.Connection, path: Path) -> sqlite3.Connection:
+    """``db``, if it holds this version's schema (closed otherwise)."""
+    try:
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+    except sqlite3.Error:
+        db.close()
+        raise
+    if version != SCHEMA_VERSION:
+        db.close()
+        raise RuntimeError(
+            f"{path} is schema {version}, not {SCHEMA_VERSION}; the service upgrades it when it "
+            "starts"
+        )
+    return db
+
+
+def _connect(uri: str) -> sqlite3.Connection:
+    # A web request may open it on one worker thread and use it on another (never at once).
+    return sqlite3.connect(uri, uri=True, check_same_thread=False)

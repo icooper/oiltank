@@ -99,8 +99,9 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
   refills, usage, problems), the SQLite history, and the service loop with a scripted camera;
 - `tests/unit/test_epochs.py`: mapping stored gauge positions across axis edits and rebases (the
   service tests check that the level survives both);
-- `tests/unit/test_archive.py`: archive records and their labels, the full-frame schedule, and the
-  size limit; `test_cli_camera.py` also covers `capture`;
+- `tests/unit/test_archive.py`: archive records and their labels, the full-frame schedule, the
+  size limit, and reading records back (including old, partial and broken ones, and which files
+  may be served); `test_cli_camera.py` also covers `capture`;
 - `tests/unit/test_web.py`: the web UI's server side, covering pages and assets, the status API,
   the request checks (host names, JSON-only changes, origins, framing), serving under a path
   prefix, and the server thread;

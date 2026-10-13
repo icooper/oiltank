@@ -102,6 +102,8 @@ flowchart LR
   median smoothing, confirmed refills, the Theil-Sen usage rate and days left. It's a function of
   the readings alone, so `service.py` rebuilds it on start and after a calibration change by
   replaying `history.py` (SQLite `data/oiltank.db`), with fractions recomputed from the stored `t`.
+- `history.py` runs in WAL mode. Only the service writes it; anything else (the web UI) uses
+  `History.open_readonly`, a connection per request.
 - `epochs.py` (pure): a stored `t` is relative to the axis it was measured along. History tags
   each reading with an epoch (one per axis), and the service registers the current one whenever
   it loads a calibration. **Read stored `t` with `observations(..., onto=epoch)`**:
@@ -114,6 +116,10 @@ flowchart LR
   last and atomically, and beyond the size cap whole records go oldest first (JSON first, down to
   `EVICT_TO`). So a record whose JSON exists has all its files. `oiltank capture` writes the same
   format to `data/captures/` with no cap.
+  - `ArchiveReader` reads records back, tolerant of older and partial ones.
+  - **It serves files only through `path()`**, which checks names against strict patterns.
+  - `ArchiveRecord.strip()` rebuilds a strip's geometry (`geometry.strip_for`), so the reader can
+    re-read it.
 - `service.py`: one thread. It waits on the event queue (`events.py`: `READ_NOW`, `HA_ONLINE`,
   `CONNECTED`, `STOP`, `CALL`) or the next interval, then runs a cycle: grab → measure → filter →
   store → publish. It writes `data/heartbeat` at least every 30 s for `oiltank healthcheck`.

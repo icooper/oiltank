@@ -130,13 +130,17 @@ class CalibrationPoint(_Model):
         return self.t
 
 
-def _piecewise_linear(x: float, xs: NDArray[np.float64], ys: NDArray[np.float64]) -> float:
-    """Interpolate through ``(xs, ys)`` (both increasing), continuing the end segments linearly."""
-    if x < xs[0]:
-        return float(ys[0] + (x - xs[0]) * (ys[1] - ys[0]) / (xs[1] - xs[0]))
-    if x > xs[-1]:
-        return float(ys[-1] + (x - xs[-1]) * (ys[-1] - ys[-2]) / (xs[-1] - xs[-2]))
-    return float(np.interp(x, xs, ys))
+def _piecewise_linear(
+    x: NDArray[np.float64], xs: NDArray[np.float64], ys: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Interpolate through ``(xs, ys)`` (both increasing), continuing the end segments linearly.
+
+    NaN stays NaN.
+    """
+    below = ys[0] + (x - xs[0]) * (ys[1] - ys[0]) / (xs[1] - xs[0])
+    above = ys[-1] + (x - xs[-1]) * (ys[-1] - ys[-2]) / (xs[-1] - xs[-2])
+    inside = np.interp(x, xs, ys)
+    return np.asarray(np.where(x < xs[0], below, np.where(x > xs[-1], above, inside)))
 
 
 IMPLICIT_E = (0.0, 0.0)
@@ -354,8 +358,13 @@ class Calibration(_Model):
         Piecewise linear through :meth:`scale_points`. Past the outermost points the end segments
         are extended, so points needn't span the whole gauge. The result is clamped to [0, 1].
         """
+        return float(self.fractions(np.float64(t)))
+
+    def fractions(self, t: NDArray[np.float64] | np.float64) -> NDArray[np.float64]:
+        """:meth:`fraction` for many positions at once (NaN, for no reading, stays NaN)."""
         ts, fs = self._curve()
-        return float(np.clip(_piecewise_linear(t, ts, fs), 0.0, 1.0))
+        x = np.asarray(t, dtype=np.float64)
+        return np.asarray(np.clip(_piecewise_linear(x, ts, fs), 0.0, 1.0))
 
     def t_for(self, fraction: float) -> float:
         """The gauge position ``t`` that reads as ``fraction``: the inverse of :meth:`fraction`.
@@ -363,4 +372,4 @@ class Calibration(_Model):
         Not clamped; a result outside [0, 1] means that reading lies beyond the axis endpoints.
         """
         ts, fs = self._curve()
-        return _piecewise_linear(fraction, fs, ts)
+        return float(_piecewise_linear(np.asarray(fraction, dtype=np.float64), fs, ts))

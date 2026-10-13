@@ -11,6 +11,9 @@ The rolling archive keeps a full frame every ``full_frame_every`` and for every 
 Beyond ``max_bytes`` it deletes whole records, oldest first, down to ``EVICT_TO`` of the limit; a
 record's JSON goes first and is written last (atomically), so a record whose JSON exists has all
 its files. A delivery capture uses the same format with every frame kept and no limit.
+
+:class:`ArchiveReader` reads records back, for the web UI. It tolerates records from older
+versions (missing fields) and records whose strip or frame is missing.
 """
 
 import itertools
@@ -24,10 +27,13 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from oiltank.calibration import Calibration
+from oiltank.calibration import Axis, Calibration, Disc
 from oiltank.config import ArchiveSettings
-from oiltank.model import Frame, FrameResult, Measurement
+from oiltank.geometry import strip_for
+from oiltank.model import Alignment, Frame, FrameResult, GaugeStrip, Measurement, Point
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +41,8 @@ EVICT_TO = 0.95
 """Once over the size limit, delete down to this fraction of it, so that the whole archive isn't
 scanned again after every new record."""
 _FILE_RE = re.compile(r"(?P<time>\d{6}Z)(?:-(?P<n>\d+))?(?P<part>\.json|-strip\.png|-frame\.jpg)")
+DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+KEY_RE = re.compile(r"\d{6}Z(?:-\d+)?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,3 +221,185 @@ def _record_key(path: Path) -> tuple[str, str, int]:
     if m is None:
         return path.parent.name, path.name, 0
     return path.parent.name, m["time"], int(m["n"] or 1)
+
+
+# ---- reading records back -----------------------------------------------------------------------
+
+
+class _Meta(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+
+class AlignmentMeta(_Meta):
+    dx: float
+    dy: float
+    score: float
+    ok: bool
+
+
+class FrameMeta(_Meta):
+    """One frame of the burst."""
+
+    source: str = ""
+    ts: datetime | None = None
+    alignment: AlignmentMeta | None = None
+    t: float | None = None
+    row: float | None = None
+    """The disc's row in that frame's strip."""
+    confidence: float | None = None
+
+
+class CalibrationSnapshot(_Meta):
+    """The calibration's geometry when the record was made (not its scale points)."""
+
+    reference_image: str | None = None
+    frame_size: tuple[int, int]
+    axis: Axis
+    disc: Disc
+
+
+class RecordMeta(_Meta):
+    """A record's JSON. Fields are optional: a failed reading has few, and older versions wrote
+    fewer."""
+
+    ts: datetime
+    reader: str | None = None
+    t: float | None = None
+    fraction: float | None = None
+    confidence: float | None = None
+    problem: str | None = None
+    position: Point | None = None
+    """The disc's centre in reference-frame pixels."""
+    notices: tuple[str, ...] = ()
+    frames: tuple[FrameMeta, ...] = ()
+    strip: str | None = None
+    strip_frame: int | None = None
+    """Which of ``frames`` the strip is from (the full frame is always the last)."""
+    strip_row: float | None = None
+    strip_t_first_row: float | None = None
+    strip_t_last_row: float | None = None
+    frame: str | None = None
+    calibration: CalibrationSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveRecord:
+    day: str
+    key: str
+    """``HHMMSSZ``, or ``HHMMSSZ-n`` for a later record in the same second."""
+    meta: RecordMeta
+    strip_path: Path | None
+    """None if the record has no strip (any more)."""
+    frame_path: Path | None
+
+    def strip(self) -> GaugeStrip | None:
+        """The strip, with the geometry it was rectified with (None if it can't be read)."""
+        cal = self.meta.calibration
+        if self.strip_path is None or cal is None:
+            return None
+        pixels = cv2.imread(str(self.strip_path), cv2.IMREAD_GRAYSCALE)
+        if pixels is None:
+            return None
+        frame = (
+            self.meta.frames[self.meta.strip_frame]
+            if self.meta.strip_frame is not None and self.meta.strip_frame < len(self.meta.frames)
+            else None
+        )
+        a = frame.alignment if frame is not None else None
+        alignment = None if a is None else Alignment(a.dx, a.dy, a.score, a.ok)
+        return strip_for(np.asarray(pixels, dtype=np.uint8), cal.axis, alignment)
+
+
+class ArchiveReader:
+    """Reads the records under an archive root (``data/archive``, or a capture's directory)."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._days: dict[str, tuple[int, list[ArchiveRecord]]] = {}
+
+    def days(self) -> list[str]:
+        """The UTC dates with records, oldest first."""
+        try:
+            return sorted(
+                d.name for d in self.root.iterdir() if d.is_dir() and DAY_RE.fullmatch(d.name)
+            )
+        except OSError:
+            return []
+
+    def records(self, day: str) -> list[ArchiveRecord]:
+        """A day's records, in the order they were made (cached until the directory changes)."""
+        if not DAY_RE.fullmatch(day):
+            return []
+        folder = self.root / day
+        try:
+            mtime = folder.stat().st_mtime_ns
+        except OSError:
+            return []
+        cached = self._days.get(day)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        records = self._read_day(folder)
+        self._days[day] = (mtime, records)
+        return records
+
+    def record(self, day: str, key: str) -> ArchiveRecord | None:
+        if not KEY_RE.fullmatch(key):
+            return None
+        return next((r for r in self.records(day) if r.key == key), None)
+
+    def path(self, day: str, name: str) -> Path | None:
+        """A record's file, if ``day`` and ``name`` are an archive day and record file that exist.
+
+        Anything else (``..``, other directories, other files) is None.
+        """
+        if not DAY_RE.fullmatch(day) or not _FILE_RE.fullmatch(name):
+            return None
+        path = self.root / day / name
+        try:
+            if not path.resolve().is_relative_to(self.root.resolve()) or not path.is_file():
+                return None
+        except OSError:
+            return None
+        return path
+
+    def nearest_full_frame(self, ts: datetime, within: timedelta) -> ArchiveRecord | None:
+        """The record with a full frame closest in time to ``ts``, no further than ``within``."""
+        utc = ts.astimezone(UTC)
+        days = {
+            (utc + timedelta(days=k)).strftime("%Y-%m-%d")
+            for k in range(-(within.days + 1), within.days + 2)
+        }
+        candidates = [
+            r
+            for day in sorted(days)
+            for r in self.records(day)
+            if r.frame_path is not None and abs(r.meta.ts - ts) <= within
+        ]
+        return min(candidates, key=lambda r: abs(r.meta.ts - ts), default=None)
+
+    def _read_day(self, folder: Path) -> list[ArchiveRecord]:
+        try:
+            names = {f.name for f in folder.iterdir()}
+        except OSError:
+            return []
+        records = []
+        for name in names:
+            m = _FILE_RE.fullmatch(name)
+            if m is None or m["part"] != ".json":
+                continue
+            key = name.removesuffix(".json")
+            try:
+                meta = RecordMeta.model_validate_json((folder / name).read_bytes())
+            except (OSError, ValidationError) as e:
+                log.debug("skipping archive record %s/%s: %s", folder.name, name, e)
+                continue
+            records.append(
+                ArchiveRecord(
+                    day=folder.name,
+                    key=key,
+                    meta=meta,
+                    strip_path=folder / meta.strip if meta.strip in names else None,
+                    frame_path=folder / meta.frame if meta.frame in names else None,
+                )
+            )
+        return sorted(records, key=lambda r: _record_key(folder / f"{r.key}.json"))
