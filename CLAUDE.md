@@ -28,10 +28,11 @@ uv run pytest -m integration             # needs Docker
 uv run ruff format . && uv run ruff check .
 uv run mypy                              # strict; covers src/ and tests/
 uv run oiltank --help                    # the CLI
-uv run oiltank read --image samples/frame0.jpg
+uv run oiltank read -c samples/calibration.yaml --image samples/frame0.jpg
+uv run oiltank calibrate show -c samples/calibration.yaml --diagnostic check.jpg
 uv add <pkg> / uv add --dev <pkg>        # dependencies; commit uv.lock alongside pyproject.toml
 docker build -t oiltank:dev .            # distroless runtime image (docker-compose.yml for deploys)
-docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev read --image /samples/frame0.jpg
+docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev read -c /samples/calibration.yaml --image /samples/frame0.jpg
 ```
 
 Python is **3.14** (`.python-version`, `requires-python`). Don't lower it to work around a missing
@@ -55,6 +56,19 @@ flowchart LR
   without re-reading frames. Both the classical reader and the future ONNX reader produce a per-row
   score over the same strip and share the peak-finding and confidence code. **The ONNX import stays
   lazy**, so the CPU image never ships onnxruntime.
+- `calibration.py`: the calibration model. A point's position is either `t` (along the axis, so it
+  moves when the axis endpoints change) or `at` (frame px, fixed). Until there are two points the
+  bottom of travel stands in for E and the top for F (`scale_points()`), and the end segments are
+  extended past the outermost points. Use `.updated(...)` for changed copies; `model_copy`
+  doesn't validate. `save()` keeps the file's header comment and writes `.bak`.
+- `calibrate.py`: pure logic behind `oiltank calibrate`: starting values, the disc-size scan, the
+  anchor self-test, rebase shifts, point edits, warnings. **The disc size matters:** an ellipse
+  12-25% too small locks onto a highlight about 12 px above the disc with full confidence. So the
+  scan follows the region of sizes that agree with the *starting* size and never just maximizes a
+  score; on these frames that's a trap, because a template twice the disc height scores best.
+- `cli/`: Typer app. `__init__.py` has `read`, `calibrate.py` the `calibrate` sub-commands,
+  `common.py` the shared helpers. Use plain `X = tuple[...]` aliases in option annotations;
+  Typer can't read `type X = ...` statements.
 - `pipeline.py` and `publish/discovery.py` are **pure**: no I/O, easy to test.
 - `publish/mqtt.py`: paho-mqtt 2.x. **CV never runs in paho callbacks**; callbacks only put
   requests on a queue that `service.py` handles.
@@ -75,16 +89,16 @@ Not every module exists yet; the README's roadmap and the milestone list track p
 
 ## Testing
 
-- Golden images are `samples/frame0.jpg` … `frame5.jpg`: native 3840×2160 go2rtc frames with the
-  tank at about 98% (owner's figure, a week after a fill). The disc's centre is at **x ≈ 2168,
-  y ≈ 1048 ± 4** in all six, and they agree within ~2 px. `samples/calibration.yaml` is their
-  calibration, and the owner tunes it by hand. Its axis bounds the physical travel, from the dome
-  cap down to the base ring. Its points are the default E at the bottom of travel and the owner's
-  98% at the disc. The mapping extends the end segments, so F lands just above the disc
-  (y ≈ 1045). Tests derive expected `t` values from the calibration (`axis.t_of`), never from
-  hard-coded endpoints. They pin only the owner's reading: the burst reads 98%.
-- A point's `t` is relative to the axis, so editing the axis endpoints moves `t` points. `at`
-  points (disc centre in frame px) don't move.
+- Golden images are `samples/frame*.jpg`: native 3840×2160 go2rtc frames with the tank at about
+  98% (owner's figure, a week after a fill). `DAY` (frame0-5, late afternoon, daylight through
+  the window) and `NIGHT` (frame6-9, IR only, slightly brighter exposure) in `tests/conftest.py`
+  list them. A test fails if a sample frame is in neither. The disc's centre is at
+  **x ≈ 2168, y ≈ 1048 ± 4** in every frame; they agree within ~2 px, day or night.
+- `samples/calibration.yaml` is their calibration, and the owner tunes it by hand. Its axis
+  bounds the physical travel, from the dome cap down to the base ring. Its one point is the
+  owner's 98% as an `at` position; E defaults to the bottom of travel, which puts F just above
+  the disc (y ≈ 1045). Tests derive expected `t` values from the calibration (`axis.t_of`), never
+  from hard-coded endpoints. They pin only the owner's reading: bursts read 98%.
 - Synthetic CV tests are built from the sample strip: moving the disc, adding noise, JPEG
   re-encoding, frame shifts, and removing the disc.
 - Integration tests are marked `integration` and need Docker (mosquitto).

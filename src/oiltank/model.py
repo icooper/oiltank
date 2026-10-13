@@ -120,6 +120,10 @@ class Measurement:
     fraction: float | None
     confidence: float
     indicator: Point | None
+    """Where the disc centre is in the frame that located it (frame px)."""
+    position: Point | None
+    """The same point with that frame's camera shift removed: reference-frame px, the coordinates
+    the calibration uses."""
     problem: Problem | None
     notices: tuple[Notice, ...]
     frames: tuple[FrameResult, ...]

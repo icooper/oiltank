@@ -125,6 +125,10 @@ def downscaled(
                     "search": max(4, round(cal.anchor.search * k)),
                 }
             ),
+            "points": [
+                p.model_copy(update={"at": (p.at[0] * k, p.at[1] * k)}) if p.at else p
+                for p in cal.points
+            ],
         }
     )
     return small, Calibration.model_validate(scaled.model_dump())

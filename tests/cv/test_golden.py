@@ -1,4 +1,4 @@
-"""The six real 4K frames: the disc's centre is at y ≈ 1048 with the tank at about 98%."""
+"""The real 4K frames, day and night: the disc's centre is at y ≈ 1048, the tank at about 98%."""
 
 import pytest
 
@@ -7,12 +7,13 @@ from oiltank.geometry import Aligner
 from oiltank.model import Frame
 from oiltank.pipeline import measure
 from oiltank.readers import GaugeReader
+from tests.conftest import DAY, NIGHT
 
 EXPECTED_Y = 1048.0
 TOLERANCE_PX = 4.0
 
 
-@pytest.mark.parametrize("index", range(6))
+@pytest.mark.parametrize("index", range(len(DAY) + len(NIGHT)), ids=[*DAY, *NIGHT])
 def test_each_frame(
     index: int,
     sample_frames: list[Frame],
@@ -39,10 +40,17 @@ def test_frames_agree(
     assert max(ys) - min(ys) <= 2.0
 
 
+@pytest.mark.parametrize("which", ["day", "night", "both"])
 def test_burst(
-    sample_frames: list[Frame], aligner: Aligner, reader: GaugeReader, calibration: Calibration
+    which: str,
+    day_frames: list[Frame],
+    night_frames: list[Frame],
+    aligner: Aligner,
+    reader: GaugeReader,
+    calibration: Calibration,
 ) -> None:
-    m = measure(sample_frames, aligner, reader, calibration)
+    frames = {"day": day_frames, "night": night_frames, "both": day_frames + night_frames}[which]
+    m = measure(frames, aligner, reader, calibration)
     assert m.ok
     assert m.indicator is not None
     assert m.indicator[1] == pytest.approx(EXPECTED_Y, abs=2.0)

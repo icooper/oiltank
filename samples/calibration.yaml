@@ -1,14 +1,15 @@
-# oiltank calibration for the sample frames in this directory.
+# oiltank calibration for the sample frames in this directory; frame0.jpg is the reference.
 #
-# The axis endpoints bound the disc centre's possible travel: the top is where the disc would
-# touch the dome cap, the bottom where it would rest on the base ring. Both are estimates from
-# frame0.jpg, and they set the strip the reader searches, not the scale.
+# The axis endpoints bound the disc centre's travel. They were set by hand with the diagnostic
+# image: the top is where the disc would touch the dome cap, the bottom where it would rest on the
+# base ring. They set where the reader looks, not the scale.
 #
-# The scale comes from `points`. The bottom of travel is still assumed to be E. The frames were
-# taken a week after a fill, when the owner put the tank at about 98% (2026-10-13). That
-# reading replaces the "top of travel = F" default; extending the line through it puts F at
-# t ≈ 0.838 (y ≈ 1045), well below the dome cap. Run `oiltank read --diagnostic check.jpg` to
-# see both ends of the scale drawn on a frame.
+# The scale comes from `points`. The owner put the tank at about 98% on 2026-10-13, a week after a
+# fill, and `oiltank calibrate point --fraction 0.98` recorded where the disc was in the sample
+# frames. With E at the bottom of travel, that puts F at y ≈ 1045, well below the dome cap. Check
+# it with `oiltank calibrate show -c samples/calibration.yaml --diagnostic check.jpg`.
+#
+# `oiltank calibrate` keeps this header comment when it rewrites the file.
 version: 1
 reference_image: frame0.jpg
 frame_size: [3840, 2160]
@@ -21,11 +22,10 @@ disc:
   width: 64.0
   height: 38.0
 anchor:
-  # The white gauge fitting and the tank top just below the dome. Never the tube interior.
   rect: [1950, 1185, 290, 165]
   search: 48
   min_score: 0.6
   recalibrate_shift: 20.0
+# One point, so the scale also takes E as the bottom of travel (t = 0).
 points:
-  - {t: 0.0, fraction: 0.0, note: "default: bottom of travel = E"}
-  - {t: 0.820, fraction: 0.98, note: "2026-10-13: owner reports ~98%, a week after a fill"}
+  - {at: [2168.0, 1047.5], fraction: 0.98, note: '2026-10-13: owner reports ~98%, a week after a fill'}

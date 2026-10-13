@@ -6,7 +6,7 @@ reference path in the YAML is resolved relative to the YAML file's directory.
 
 import itertools
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Any, Self
 
 import numpy as np
 import yaml
@@ -32,6 +32,10 @@ class ResolutionMismatch(CalibrationError):  # noqa: N818 - reads better than ..
 
 class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    def updated(self, **changes: Any) -> Self:
+        """A validated copy with ``changes`` applied (``model_copy`` doesn't validate)."""
+        return self.model_validate({**dict(self), **changes})
 
 
 class Axis(_Model):
@@ -123,11 +127,64 @@ def _piecewise_linear(x: float, xs: NDArray[np.float64], ys: NDArray[np.float64]
     return float(np.interp(x, xs, ys))
 
 
-def _default_points() -> list[CalibrationPoint]:
-    return [
-        CalibrationPoint(t=0.0, fraction=0.0, note="default: bottom of travel = E"),
-        CalibrationPoint(t=1.0, fraction=1.0, note="default: top of travel = F"),
-    ]
+IMPLICIT_E = (0.0, 0.0)
+"""``(t, fraction)``: until there are two points, the bottom of travel may stand in for E..."""
+IMPLICIT_F = (1.0, 1.0)
+"""...and the top of travel for F."""
+
+_DEFAULT_HEADER = """\
+# oiltank calibration. Safe to hand-edit; it is validated on load. `oiltank calibrate` keeps this
+# header comment when it rewrites the file, but not comments further down.
+"""
+
+
+class _Flow(dict[str, Any]):
+    """A mapping written in YAML flow style, ``{a: 1, b: 2}``."""
+
+
+class _Dumper(yaml.SafeDumper):
+    """Block style overall, but lists of scalars and points on one line; list items indented."""
+
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+        super().increase_indent(flow, False)
+
+
+def _represent_list(dumper: yaml.SafeDumper, data: list[Any]) -> yaml.Node:
+    flow = all(not isinstance(v, list | dict) for v in data)
+    return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=flow)
+
+
+def _represent_flow(dumper: yaml.SafeDumper, data: _Flow) -> yaml.Node:
+    return dumper.represent_mapping("tag:yaml.org,2002:map", data, flow_style=True)
+
+
+_Dumper.add_representer(list, _represent_list)
+_Dumper.add_representer(_Flow, _represent_flow)
+
+
+def _rounded(value: Any) -> Any:
+    """Round floats (recursively) so rewritten files stay readable."""
+    if isinstance(value, float):
+        return round(value, 3)
+    if isinstance(value, list):
+        return [_rounded(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _rounded(v) for k, v in value.items()}
+    return value
+
+
+def _leading_comments(text: str) -> str:
+    lines = []
+    for line in text.splitlines(keepends=True):
+        if not line.startswith("#"):
+            break
+        lines.append(line)
+    return "".join(lines)
+
+
+def _point_yaml(point: CalibrationPoint) -> _Flow:
+    data = _rounded(point.model_dump(mode="json"))
+    return _Flow({k: v for k, v in data.items() if v not in (None, "")})
 
 
 class Calibration(_Model):
@@ -137,7 +194,7 @@ class Calibration(_Model):
     axis: Axis
     disc: Disc
     anchor: Anchor
-    points: list[CalibrationPoint] = Field(default_factory=_default_points)
+    points: list[CalibrationPoint] = Field(default_factory=list)
 
     _base_dir: Path = PrivateAttr(default_factory=Path.cwd)
     _anchor_patch: GrayImage | None = PrivateAttr(default=None)
@@ -146,10 +203,7 @@ class Calibration(_Model):
     def _check(self) -> Self:
         if self.version != CALIBRATION_VERSION:
             raise ValueError(f"unsupported calibration version {self.version}")
-        if len(self.points) < 2:
-            raise ValueError("at least two calibration points are required")
-        pts = sorted((p.t_on(self.axis), p.fraction) for p in self.points)
-        for (ta, fa), (tb, fb) in itertools.pairwise(pts):
+        for (ta, fa), (tb, fb) in itertools.pairwise(self.scale_points()):
             if not (tb > ta and fb > fa):
                 raise ValueError(
                     "calibration points must increase in both t and fraction "
@@ -161,7 +215,18 @@ class Calibration(_Model):
             raise ValueError(f"anchor rect {self.anchor.rect} is outside the {w}x{h} frame")
         return self
 
-    # ---- persistence ---------------------------------------------------------------------------
+    # ---- construction and persistence ----------------------------------------------------------
+
+    @classmethod
+    def build(cls, base_dir: Path, **fields: Any) -> Self:
+        """Validate a calibration whose relative reference path resolves against ``base_dir``."""
+        cal = cls.model_validate(fields)
+        cal._base_dir = base_dir.resolve()
+        return cal
+
+    def updated(self, **changes: Any) -> Self:
+        """A validated copy with ``changes`` applied; the reference directory carries over."""
+        return self.build(self._base_dir, **{**dict(self), **changes})
 
     @classmethod
     def load(cls, path: Path) -> Self:
@@ -169,15 +234,49 @@ class Calibration(_Model):
             data = yaml.safe_load(path.read_text())
         except OSError as e:
             raise CalibrationError(f"cannot read calibration {path}: {e}") from e
-        cal = cls.model_validate(data)
-        cal._base_dir = path.resolve().parent
-        return cal
+        except yaml.YAMLError as e:
+            raise CalibrationError(f"calibration {path} is not valid YAML: {e}") from e
+        if not isinstance(data, dict):
+            raise CalibrationError(f"calibration {path} should be a YAML mapping")
+        return cls.build(path.parent, **data)
 
     def save(self, path: Path) -> None:
-        data = self.model_dump(mode="json")
-        data["points"] = [{k: v for k, v in p.items() if v is not None} for p in data["points"]]
-        header = "# oiltank calibration. Safe to hand-edit; validated on load.\n"
-        path.write_text(header + yaml.safe_dump(data, sort_keys=False))
+        """Write the calibration as YAML, atomically.
+
+        An existing file's header comment is kept and its previous contents are copied to
+        ``<name>.bak``.
+        """
+        data = _rounded(self.model_dump(mode="json", exclude={"points"}))
+        points = [_point_yaml(p) for p in sorted(self.points, key=lambda p: p.t_on(self.axis))]
+        header = _DEFAULT_HEADER
+        if path.exists():
+            previous = path.read_text()
+            header = _leading_comments(previous) or header
+            path.with_name(path.name + ".bak").write_text(previous)
+
+        def dump(obj: object) -> str:
+            return yaml.dump(obj, Dumper=_Dumper, sort_keys=False, width=110, allow_unicode=True)
+
+        match len(points):
+            case 0:
+                scale_note = (
+                    "# No points yet, so the scale runs from E at the bottom of travel (t = 0)"
+                    " to F at the top (t = 1).\n"
+                )
+            case 1 if points[0]["fraction"] >= 0.5:
+                scale_note = (
+                    "# One point, so the scale also takes E as the bottom of travel (t = 0).\n"
+                )
+            case 1:
+                scale_note = (
+                    "# One point, so the scale also takes F as the top of travel (t = 1).\n"
+                )
+            case _:
+                scale_note = ""
+        text = header + dump(data) + scale_note + dump({"points": points})
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_text(text)
+        tmp.replace(path)
 
     @property
     def reference_path(self) -> Path:
@@ -208,8 +307,24 @@ class Calibration(_Model):
                 "check the camera URL (main stream?) or recalibrate"
             )
 
-    def _curve(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    def scale_points(self) -> list[tuple[float, float]]:
+        """The ``(t, fraction)`` pairs the scale is built from, in order of ``t``.
+
+        Defaults fill in until there are two points. With no points, the bottom of travel is E and
+        the top is F. With one, it is paired with whichever of those is further from it in reading,
+        so one known reading near full plus E at the bottom of travel sets the scale.
+        """
         pts = sorted((p.t_on(self.axis), p.fraction) for p in self.points)
+        match pts:
+            case []:
+                return [IMPLICIT_E, IMPLICIT_F]
+            case [(t, f)]:
+                return [IMPLICIT_E, (t, f)] if f >= 0.5 else [(t, f), IMPLICIT_F]
+            case _:
+                return pts
+
+    def _curve(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        pts = self.scale_points()
         ts = np.array([t for t, _ in pts], dtype=np.float64)
         fs = np.array([f for _, f in pts], dtype=np.float64)
         return ts, fs
@@ -217,9 +332,8 @@ class Calibration(_Model):
     def fraction(self, t: float) -> float:
         """Map gauge position ``t`` to a gauge reading in [0, 1].
 
-        Piecewise linear through the points. Past the outermost points the end segments are
-        extended, so points needn't span the whole gauge: a single checked reading near full plus
-        the default E point still puts F in the right place. The result is clamped to [0, 1].
+        Piecewise linear through :meth:`scale_points`. Past the outermost points the end segments
+        are extended, so points needn't span the whole gauge. The result is clamped to [0, 1].
         """
         ts, fs = self._curve()
         return float(np.clip(_piecewise_linear(t, ts, fs), 0.0, 1.0))

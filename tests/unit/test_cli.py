@@ -34,7 +34,7 @@ def test_read_burst_json_and_images(sample_frame_paths: list[Path], tmp_path: Pa
     assert result.exit_code == 0, result.output
     summary = json.loads(result.stdout)
     assert summary["ok"] is True
-    assert len(summary["frames"]) == 6
+    assert len(summary["frames"]) == len(sample_frame_paths)
     assert 0.97 < summary["fraction"] < 0.99
     assert out.read_bytes()[:2] == b"\xff\xd8"
     assert diag.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"

@@ -4,7 +4,12 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from oiltank.calibration import Calibration, CalibrationPoint, ResolutionMismatch
+from oiltank.calibration import (
+    Calibration,
+    CalibrationError,
+    CalibrationPoint,
+    ResolutionMismatch,
+)
 
 
 def _data(**overrides: Any) -> dict[str, Any]:
@@ -118,14 +123,35 @@ def test_points_may_be_given_in_any_order() -> None:
 @pytest.mark.parametrize(
     "points",
     [
-        [{"t": 0.0, "fraction": 0.0}],
         [{"t": 0.0, "fraction": 0.5}, {"t": 1.0, "fraction": 0.4}],
         [{"t": 0.3, "fraction": 0.1}, {"t": 0.3, "fraction": 0.2}],
+        [{"t": -0.1, "fraction": 0.9}],  # pairs with E at t = 0, but lies below it
+        [{"t": 1.2, "fraction": 0.2}],  # pairs with F at t = 1, but lies above it
     ],
 )
 def test_invalid_points_rejected(points: list[dict[str, float]]) -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="increase"):
         Calibration.model_validate(_data(points=points))
+
+
+def test_one_high_point_pairs_with_e_at_the_bottom() -> None:
+    cal = Calibration.model_validate(_data(points=[{"t": 0.8, "fraction": 0.96}]))
+    assert cal.scale_points() == [(0.0, 0.0), (0.8, 0.96)]
+    assert cal.fraction(0.4) == pytest.approx(0.48)
+    assert cal.t_for(1.0) == pytest.approx(0.8 / 0.96)
+
+
+def test_one_low_point_pairs_with_f_at_the_top() -> None:
+    cal = Calibration.model_validate(_data(points=[{"t": 0.3, "fraction": 0.2}]))
+    assert cal.scale_points() == [(0.3, 0.2), (1.0, 1.0)]
+    assert cal.fraction(0.65) == pytest.approx(0.6)
+    assert cal.t_for(0.0) == pytest.approx(0.3 - 0.2 * 0.7 / 0.8)
+
+
+def test_two_points_need_no_defaults() -> None:
+    points = [{"t": 0.2, "fraction": 0.25}, {"t": 0.6, "fraction": 0.75}]
+    cal = Calibration.model_validate(_data(points=points))
+    assert cal.scale_points() == [(0.2, 0.25), (0.6, 0.75)]
 
 
 def test_anchor_outside_frame_rejected() -> None:
@@ -183,3 +209,46 @@ def test_sample_calibration_scale(calibration: Calibration) -> None:
     assert calibration.t_for(0.0) == pytest.approx(0.0)
     f_y = calibration.axis.point(calibration.t_for(1.0))[1]
     assert 1005 < f_y < 1047.3
+
+
+def test_save_format_header_and_backup(tmp_path: Path) -> None:
+    path = tmp_path / "calibration.yaml"
+    cal = Calibration.build(tmp_path, **_data())
+    cal.save(path)
+    first = path.read_text()
+    assert first.startswith("# oiltank calibration.")
+    assert "frame_size: [400, 300]" in first  # short lists on one line
+    assert "# No points yet" in first
+    assert not (tmp_path / "calibration.yaml.bak").exists()
+
+    # A hand-written header survives a rewrite, and the previous version is kept.
+    path.write_text("# my gauge\n# second line\n" + first.split("\n", 2)[2])
+    edited = path.read_text()
+    point = CalibrationPoint(at=(200.04, 70.0), fraction=0.9, note="checked")
+    cal.updated(points=[point]).save(path)
+    text = path.read_text()
+    assert text.startswith("# my gauge\n# second line\nversion: 1\n")
+    assert "  - {at: [200.04, 70.0], fraction: 0.9, note: checked}" in text
+    assert "# One point, so the scale also takes E" in text
+    assert (tmp_path / "calibration.yaml.bak").read_text() == edited
+    assert not list(tmp_path.glob(".*.tmp"))
+    assert Calibration.load(path).points == [point]
+
+
+def test_updated_validates_and_keeps_reference_dir(tmp_path: Path) -> None:
+    cal = Calibration.build(tmp_path, **_data())
+    moved = cal.updated(disc={"width": 40, "height": 20})
+    assert moved.disc.width == 40
+    assert moved.reference_path == tmp_path / "ref.png"
+    with pytest.raises(ValidationError, match="axis"):
+        cal.updated(axis=cal.axis.updated(bottom=(200, 52)))
+
+
+def test_load_rejects_non_mapping(tmp_path: Path) -> None:
+    path = tmp_path / "c.yaml"
+    path.write_text("- just\n- a list\n")
+    with pytest.raises(CalibrationError, match="mapping"):
+        Calibration.load(path)
+    path.write_text("version: [1\n")
+    with pytest.raises(CalibrationError, match="not valid YAML"):
+        Calibration.load(path)

@@ -11,18 +11,32 @@ from oiltank.sources.files import load_frame
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 SAMPLE_CALIBRATION = SAMPLES / "calibration.yaml"
 
+# Native-4K go2rtc frames, all with the tank at about 98%. frame0 is the calibration reference.
+DAY = tuple(f"frame{i}.jpg" for i in range(6))
+"""2026-10-12 17:03 local: daylight through the basement window, IR on the gauge."""
+NIGHT = tuple(f"frame{i}.jpg" for i in range(6, 10))
+"""2026-10-12 22:44-22:47 local: IR only; the window is dark and the exposure a little brighter."""
+
 
 @pytest.fixture(scope="session")
 def sample_frame_paths() -> list[Path]:
-    """The six native-4K go2rtc frames in ``samples/``."""
-    paths = sorted(SAMPLES.glob("frame*.jpg"))
-    assert len(paths) == 6, f"expected 6 sample frames in {SAMPLES}, found {len(paths)}"
-    return paths
+    """Every sample frame: day, then night."""
+    return [SAMPLES / name for name in (*DAY, *NIGHT)]
 
 
 @pytest.fixture(scope="session")
 def sample_frames(sample_frame_paths: list[Path]) -> list[Frame]:
     return [load_frame(p) for p in sample_frame_paths]
+
+
+@pytest.fixture(scope="session")
+def day_frames(sample_frames: list[Frame]) -> list[Frame]:
+    return sample_frames[: len(DAY)]
+
+
+@pytest.fixture(scope="session")
+def night_frames(sample_frames: list[Frame]) -> list[Frame]:
+    return sample_frames[len(DAY) :]
 
 
 @pytest.fixture(scope="session")

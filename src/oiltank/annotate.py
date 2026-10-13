@@ -3,6 +3,7 @@
 :func:`render` is the compact image published to Home Assistant. :func:`render_diagnostic` is a
 larger view for checking a calibration: it outlines the disc where the calibration says 0% (E) and
 100% (F) are, alongside the detected disc, the area the reader searches and the alignment anchor.
+:func:`render_grid` overlays frame coordinates, for reading off positions while calibrating.
 """
 
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ _GREY = (200, 200, 200)
 _CYAN = (230, 210, 60)
 _MAGENTA = (210, 90, 210)
 _WHITE = (255, 255, 255)
+_YELLOW = (40, 230, 240)
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 MAX_JPEG_BYTES = 50_000
@@ -103,7 +105,8 @@ def _header(
 def _crop(gray: GrayImage, box: tuple[int, int, int, int], scale: float) -> np.ndarray:
     x0, y0, x1, y1 = box
     crop = cv2.cvtColor(gray[y0:y1, x0:x1], cv2.COLOR_GRAY2BGR)
-    return np.asarray(cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC))
+    interpolation = cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA
+    return np.asarray(cv2.resize(crop, None, fx=scale, fy=scale, interpolation=interpolation))
 
 
 def _text(
@@ -280,6 +283,42 @@ def render_diagnostic(
     for i, text in enumerate(legend):
         cv2.putText(footer, text, (8, 22 + 20 * i), _FONT, 0.45, _GREY, 1, line)
     return np.vstack([_header(img.shape[1], measurement, capacity, unit), img, footer])
+
+
+def _nice_step(target: float) -> int:
+    """The whole round number (1, 2, 2.5 or 5 times a power of ten) nearest ``target``."""
+    candidates = (m * 10**k for k in range(6) for m in (1, 2, 2.5, 5))
+    steps = [int(v) for v in candidates if v >= 1 and v == int(v)]
+    return min(steps, key=lambda s: abs(np.log(s / max(target, 1.0))))
+
+
+def render_grid(
+    gray: GrayImage,
+    region: tuple[int, int, int, int] | None = None,
+    *,
+    step: int | None = None,
+    width: int = 1600,
+) -> np.ndarray:
+    """``gray`` (or the ``(x, y, w, h)`` region of it) scaled to ``width`` px, with labelled
+    gridlines every ``step`` frame px (by default about 12 across). BGR out.
+    """
+    fh, fw = gray.shape
+    x, y, w, h = region or (0, 0, fw, fh)
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(fw, x + w), min(fh, y + h)
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError(f"region {region} is outside the {fw}x{fh} frame")
+    scale = width / (x1 - x0)
+    img = _crop(gray, (x0, y0, x1, y1), scale)
+    view = _View(x0, y0, scale)
+    step = step or _nice_step((x1 - x0) / 12)
+    for gx in range(-(-x0 // step) * step, x1, step):
+        cv2.line(img, view.px(gx, y0), view.px(gx, y1), _YELLOW, 1)
+        _text(img, str(gx), (view.px(gx, y0)[0] + 3, 16), _YELLOW)
+    for gy in range(-(-y0 // step) * step, y1, step):
+        cv2.line(img, view.px(x0, gy), view.px(x1, gy), _YELLOW, 1)
+        _text(img, str(gy), (4, view.px(x0, gy)[1] - 4), _YELLOW)
+    return img
 
 
 def encode_jpeg(image: np.ndarray, max_bytes: int = MAX_JPEG_BYTES) -> bytes:

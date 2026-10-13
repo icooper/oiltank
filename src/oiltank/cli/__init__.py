@@ -5,19 +5,23 @@ from pathlib import Path
 from typing import Annotated
 
 import cv2
-import numpy as np
 import typer
 
 from oiltank import __version__
 from oiltank.annotate import encode_jpeg, render, render_diagnostic
-from oiltank.calibration import Calibration, CalibrationError
-from oiltank.geometry import Aligner
+from oiltank.calibration import CalibrationError
+from oiltank.cli import calibrate
+from oiltank.cli.common import (
+    DEFAULT_CALIBRATION,
+    CalibrationPath,
+    fail,
+    load_calibration,
+    load_frames,
+    tools,
+    write_image,
+)
 from oiltank.model import Measurement
 from oiltank.pipeline import measure
-from oiltank.readers import ReaderConfig, build_reader
-from oiltank.sources.files import load_frame
-
-DEFAULT_CALIBRATION = Path("/data/calibration.yaml")
 
 app = typer.Typer(
     name="oiltank",
@@ -25,6 +29,7 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+app.add_typer(calibrate.app, name="calibrate")
 
 
 def _print_version(value: bool) -> None:
@@ -53,6 +58,7 @@ def _summary(m: Measurement) -> dict[str, object]:
         "t": None if m.t is None else round(m.t, 4),
         "confidence": round(m.confidence, 3),
         "indicator": None if m.indicator is None else [round(v, 1) for v in m.indicator],
+        "position": None if m.position is None else [round(v, 1) for v in m.position],
         "problem": m.problem,
         "notices": list(m.notices),
         "reader": m.reader,
@@ -73,17 +79,6 @@ def _summary(m: Measurement) -> dict[str, object]:
     }
 
 
-def _write_image(path: Path, image: np.ndarray) -> None:
-    """Write ``image`` in the format its suffix names (JPEG unless it's .png)."""
-    if path.suffix.lower() == ".png":
-        ok, buf = cv2.imencode(".png", image)
-    else:
-        ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    if not ok:
-        raise ValueError(f"could not encode {path}")
-    path.write_bytes(buf.tobytes())
-
-
 @app.command()
 def read(
     images: Annotated[
@@ -96,9 +91,7 @@ def read(
             help="Image file to read. Repeat to read several frames as one burst.",
         ),
     ],
-    calibration_path: Annotated[
-        Path, typer.Option("--calibration", "-c", help="Calibration YAML.")
-    ] = DEFAULT_CALIBRATION,
+    calibration_path: CalibrationPath = DEFAULT_CALIBRATION,
     annotate: Annotated[
         Path | None, typer.Option("--annotate", help="Write an annotated JPEG of the gauge here.")
     ] = None,
@@ -114,20 +107,22 @@ def read(
     as_json: Annotated[bool, typer.Option("--json", help="Print the result as JSON.")] = False,
 ) -> None:
     """Read the gauge level from one or more image files."""
+    calibration = load_calibration(calibration_path)
+    aligner, reader = tools(calibration)
+    frames = load_frames(images)
     try:
-        calibration = Calibration.load(calibration_path)
-        aligner = Aligner(calibration.anchor, calibration.anchor_patch)
-        reader = build_reader(ReaderConfig(), calibration)
-        frames = [load_frame(p) for p in images]
         m = measure(frames, aligner, reader, calibration)
-    except (CalibrationError, ValueError) as e:
-        typer.echo(f"error: {e}", err=True)
-        raise typer.Exit(2) from e
+    except CalibrationError as e:
+        fail(str(e))
 
     if annotate is not None:
-        annotate.write_bytes(encode_jpeg(render(frames[-1].gray, m, calibration)))
+        data = encode_jpeg(render(frames[-1].gray, m, calibration))
+        try:
+            annotate.write_bytes(data)
+        except OSError as e:
+            fail(f"cannot write {annotate}: {e}")
     if diagnostic is not None:
-        _write_image(diagnostic, render_diagnostic(frames[-1].gray, calibration, m))
+        write_image(diagnostic, render_diagnostic(frames[-1].gray, calibration, m))
 
     if as_json:
         typer.echo(json.dumps(_summary(m), indent=2))

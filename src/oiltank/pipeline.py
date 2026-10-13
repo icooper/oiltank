@@ -65,6 +65,7 @@ def measure(
             fraction=None,
             confidence=0.0,
             indicator=None,
+            position=None,
             problem=problem,
             notices=tuple(notices),
             frames=tuple(results),
@@ -76,7 +77,7 @@ def measure(
         return failed(Problem.CAMERA_MOVED)
 
     good = [
-        (r.strip, r.reading, r.reading.t)
+        (r, r.strip, r.reading, r.reading.t)
         for r in aligned
         if r.strip is not None
         and r.reading is not None
@@ -86,20 +87,21 @@ def measure(
     if len(good) < majority:
         return failed(Problem.LOW_CONFIDENCE)
 
-    ts_ = np.array([t for _, _, t in good])
+    ts_ = np.array([t for *_, t in good])
     t = float(np.median(ts_))
     spread = float(np.median(np.abs(ts_ - t)))
     agreement = float(
         np.clip(1.0 - max(0.0, spread - p.spread_ok) / (p.spread_bad - p.spread_ok), 0.0, 1.0)
     )
-    confidence = float(np.median([reading.confidence for _, reading, _ in good])) * agreement
+    confidence = float(np.median([reading.confidence for _, _, reading, _ in good])) * agreement
 
     # Indicator position in frame coordinates, from the frame whose t is closest to the median.
-    strip, reading, _ = min(good, key=lambda g: abs(g[2] - t))
-    indicator = None
+    result, strip, reading, _ = min(good, key=lambda g: abs(g[3] - t))
+    indicator = position = None
     if reading.row is not None:
         col = reading.col if reading.col is not None else strip.cols / 2
         indicator = strip.frame_point(col, reading.row)
+        position = (indicator[0] - result.alignment.dx, indicator[1] - result.alignment.dy)
 
     return Measurement(
         ts=frames[-1].ts,
@@ -107,6 +109,7 @@ def measure(
         fraction=calibration.fraction(t),
         confidence=confidence,
         indicator=indicator,
+        position=position,
         problem=None,
         notices=tuple(notices),
         frames=tuple(results),

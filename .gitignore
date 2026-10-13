@@ -223,6 +223,7 @@ __marimo__/
 /config/
 /data/
 
-# Images written by the README's example commands
+# Backups written by `oiltank calibrate`, and images from the README's example commands
+*.yaml.bak
 /gauge.jpg
 /check.jpg
