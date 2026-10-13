@@ -4,10 +4,24 @@ Reads the float gauge on a residential heating-oil tank from an IP camera and pu
 to [Home Assistant](https://www.home-assistant.io/) over MQTT, with entities that appear
 automatically through MQTT discovery, the way Zigbee2MQTT's do.
 
-> **Status: early development (milestone M6).** The service runs. It reads the gauge from go2rtc
-> on a schedule, filters and stores the readings, detects refills, estimates the usage rate and
-> days left, publishes everything to Home Assistant, and archives what it saw. `oiltank capture`
-> records an oil delivery. A final documentation pass (M7) is next; see [Roadmap](#roadmap).
+<img src="docs/images/gauge.jpg" alt="The annotated gauge image the service publishes: 98%, 245 gal" align="right" width="230">
+
+It runs as a small, locked-down container alongside go2rtc. Every 15 minutes it takes a burst of
+4K frames, finds the indicator disc in the gauge's clear dome, and publishes the level. It also
+publishes the volume, the usage rate and days left, refills, an annotated gauge image, a
+**Read now** button, and a problem flag. It keeps a history and an archive of what it saw, which
+is enough to train a model later, and it can record an oil delivery frame by frame.
+
+> **Status: MVP complete (milestones M0–M7).** Running against a real tank. Refill detection and
+> the usage rate have been tested on synthetic data and are waiting for the next delivery. See the
+> [Roadmap](#roadmap) for what's next.
+
+**Contents:** [How it works](#how-it-works) · [Requirements](#requirements) ·
+[Quick start](#quick-start) · [The service](#the-service) · [Configuration](#configuration) ·
+[Calibration](#calibration) · [Home Assistant](#home-assistant) ·
+[Accuracy and limitations](#accuracy-and-limitations) · [Troubleshooting](#troubleshooting) ·
+[Development](#development) · [Container and security](#container-and-security) ·
+[Roadmap](#roadmap)
 
 ## How it works
 
@@ -22,8 +36,10 @@ flowchart TB
         find --> calibrate["Calibrate<br/>t → level"]
         calibrate --> filter["Filter<br/>smooth, refills, usage"]
     end
-    oiltank -->|"discovery + state"| broker[("MQTT broker")]
+    oiltank -->|"discovery, state, image"| broker[("MQTT broker")]
+    broker -->|"Read now"| oiltank
     broker --> ha["Home Assistant"]
+    oiltank --> data[("./data<br/>calibration, history,<br/>archive")]
 ```
 
 1. **Fetch.** A burst of frames is pulled from [go2rtc](https://github.com/AlexxIT/go2rtc)'s
@@ -40,9 +56,12 @@ flowchart TB
 4. **Combine and calibrate.** A burst of frames is combined by median. Confidence drops if the
    frames disagree. `t` is mapped to a fill fraction through calibration points you check against
    the gauge by eye, then to gallons using the tank's usable capacity.
-5. **Filter and publish** *(planned)*. Low-confidence readings are rejected and accepted ones
-   smoothed. Refills are detected and the usage rate estimated. The results go to MQTT with Home
-   Assistant discovery.
+5. **Filter and publish.** Low-confidence readings are rejected and accepted ones smoothed.
+   Refills are detected and the usage rate estimated. The results go to MQTT with Home Assistant
+   discovery, together with the annotated gauge image shown above.
+6. **Remember.** Every reading goes into a SQLite history, and what it saw into a size-capped
+   archive. On restart, or after a calibration change, the service rebuilds its state from the
+   history.
 
 Classical computer vision runs on the CPU. The reader sits behind an interface, so a learned ONNX
 model, running on CPU or an NVIDIA GPU, can replace it through config later.
@@ -158,6 +177,11 @@ replaying recent readings with the current calibration. So adding a calibration 
 
 `oiltank history [--days N]` lists recent readings and refills, and what they add up to.
 
+`oiltank healthcheck` (the container's healthcheck) checks that the service's loop has written its
+heartbeat file in the last two minutes. The service stops cleanly on SIGTERM (`docker compose
+stop`): it finishes a reading in progress and marks the device unavailable. Starting before the
+broker or camera is reachable is fine; it keeps retrying.
+
 ### Frame archive
 
 The service also keeps what each reading saw in `data/archive/<UTC date>/`. Each record has three
@@ -204,14 +228,11 @@ frame:
 oiltank calibrate point --fraction 0.93 --note "delivery: 172 gal on the ticket" \
   --image /data/captures/20261020-141500Z/2026-10-20/143010Z-frame.jpg
 ```
-`oiltank healthcheck` (the container's healthcheck) checks that the service's loop has written its
-heartbeat file in the last two minutes. The service stops cleanly on SIGTERM (`docker compose
-stop`): it finishes a reading in progress and marks the device unavailable.
 
 ## Configuration
 
 All settings come from environment variables named `OILTANK_<SECTION>_<KEY>`, normally kept in
-`.env`. Copy `.env.example`, which lists every setting with its default. `.env` is git-ignored, and
+`.env`. A test checks this table against the code. Copy `.env.example`, which lists every setting with its default. `.env` is git-ignored, and
 Docker Compose passes it to the container whole.
 
 Variables set in your shell win over `.env`, and `.env` wins over the defaults. An empty value
@@ -219,17 +240,17 @@ means "not set". An `OILTANK_` name that matches no setting is an error, which c
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `OILTANK_CAMERA_URL` | none | An URL that returns one full-size JPEG per request. For go2rtc: `http://<host>:1984/api/frame.jpeg?src=<stream>`. |
+| `OILTANK_CAMERA_URL` | none | A URL that returns one full-size JPEG per request. For go2rtc: `http://<host>:1984/api/frame.jpeg?src=<stream>`. |
 | `OILTANK_CAMERA_USERNAME`, `_PASSWORD` | none | Basic auth, if go2rtc's `api:` section sets it. Never put these in the URL. |
 | `OILTANK_CAMERA_BURST_FRAMES` | 5 | Frames per reading, combined by median. |
 | `OILTANK_CAMERA_BURST_SPACING_S` | 2.0 | Seconds between frames. Use at least the camera's keyframe interval: duplicate frames are dropped and refetched. |
 | `OILTANK_CAMERA_TIMEOUT_S` | 15 | Per request. |
 | `OILTANK_CAMERA_RETRIES`, `_RETRY_BACKOFF_S` | 3, 2.0 | Retries for timeouts, connection errors and HTTP 5xx. The wait doubles each time. |
 | `OILTANK_CAMERA_VERIFY_TLS` | true | For `https://` URLs. |
-| `OILTANK_MQTT_HOST`, `_PORT` | none, 1883 | Home Assistant's MQTT broker (M4). |
+| `OILTANK_MQTT_HOST`, `_PORT` | none, 1883 | Home Assistant's MQTT broker. |
 | `OILTANK_MQTT_USERNAME`, `_PASSWORD`, `_TLS` | none, none, false | |
 | `OILTANK_MQTT_CLIENT_ID`, `_TOPIC_PREFIX`, `_DISCOVERY_PREFIX` | oiltank, oiltank, homeassistant | |
-| `OILTANK_DEVICE_ID`, `_NAME` | oil_tank, Oil Tank | How the tank appears in Home Assistant (M4). |
+| `OILTANK_DEVICE_ID`, `_NAME` | oil_tank, Oil Tank | How the tank appears in Home Assistant, and the entity ids it gets. |
 | `OILTANK_TANK_CAPACITY`, `_UNIT` | 260, gal | Usable capacity when the gauge reads F. |
 | `OILTANK_TANK_RESERVE` | 0 | "Days left" counts down to this volume. |
 | `OILTANK_SERVICE_INTERVAL_MIN` | 15 | Minutes between readings. |
@@ -358,6 +379,9 @@ Problems appear as `warning:` lines. They include:
 `calibrate show --diagnostic check.jpg` (or `read --diagnostic`) draws the calibration over a
 real frame:
 
+<img src="docs/images/diagnostic.jpg" alt="The diagnostic view: disc outlines at 0% and 100%, the detected disc, the search area and the anchor" width="420">
+
+
 - **cyan disc outlines** where the calibration puts 0% (E) and 100% (F), with 25/50/75% marks
   between;
 - **white dots** at the calibration points;
@@ -448,8 +472,8 @@ points:                          # disc position -> gauge reading (0 = E, 1 = F)
   - {at: [2168.0, 1047.5], fraction: 0.98, note: '2026-10-13: owner reports ~98%, a week after a fill'}
 ```
 
-*Later (milestone M6):* `oiltank capture` will record the disc across its whole range during an
-oil delivery, which is the best way to collect points along the whole scale.
+The best way to collect points along the whole scale is to
+[record a delivery](#recording-a-delivery).
 
 ## Home Assistant
 
@@ -541,14 +565,60 @@ automation:
           message: "Oil delivered: {{ states('sensor.oil_tank_last_fill_amount') }} gal."
 ```
 
-*Planned (M7):* an example dashboard card.
+### Dashboard card
+
+A gauge, the details, and the latest gauge image (YAML for a manual card):
+
+```yaml
+type: vertical-stack
+cards:
+  - type: gauge
+    entity: sensor.oil_tank_level
+    name: Heating oil
+    min: 0
+    max: 100
+    needle: true
+    severity:
+      green: 40
+      yellow: 20
+      red: 0
+  - type: entities
+    entities:
+      - sensor.oil_tank_volume
+      - sensor.oil_tank_usage_rate
+      - sensor.oil_tank_days_left
+      - sensor.oil_tank_last_fill
+      - sensor.oil_tank_last_fill_amount
+      - binary_sensor.oil_tank_problem
+      - button.oil_tank_read_now
+  - type: picture-entity
+    entity: image.oil_tank_gauge
+    show_name: false
+    show_state: false
+```
+
+The entity ids come from the device name. With `OILTANK_DEVICE_NAME` set to something else, they
+follow it.
 
 ## Accuracy and limitations
 
-Expect about **±2–3%** at 4K. Accuracy is limited more by the camera's noise reduction, JPEG
-compression and the textured wall visible through the clear dome than by resolution. The gauge
-mechanism isn't perfectly linear, which is why calibration uses points you've checked by eye
-rather than assuming the top of the dome is "full".
+- **About ±2–3% at 4K.** The disc moves about 125 px from E to F, so 1 px is 0.8% of the gauge,
+  and readings of the same scene agree to within about 1 px. The limits are the camera's noise
+  reduction, JPEG compression, and the textured wall seen through the clear dome, more than
+  resolution.
+- **The scale is only as good as its points.** The gauge mechanism isn't perfectly linear, and
+  where the dome's ends fall on the scale varies between gauges. On the sample tank, assuming the
+  dome cap was F read 82% instead of 98%. Add points from readings you trust, and from deliveries.
+- **Volume is level × capacity.** That assumes the gauge's marks are fractions of the tank's
+  volume, which is how gauges for a given tank size are usually marked. If yours aren't, points at
+  known volumes (delivery tickets) correct it. A proper tank chart is on the roadmap.
+- **The disc size matters.** A template much smaller than the disc can lock onto a highlight with
+  full confidence; see [Disc size](#disc-size). `calibrate show` reports how much margin you have.
+- **Tested so far near full.** The sample frames, day and night, all show the tank at about 98%.
+  Synthetic tests move the disc across the whole gauge, and the next delivery capture will show
+  how real readings hold up at other heights.
+- **Usage rate needs the heating to be using oil.** In summer, with only hot water or nothing,
+  usage can be close to zero and days left unknown, which is correct but not very useful.
 
 ## Troubleshooting
 
@@ -586,7 +656,21 @@ doesn't restart unhealthy containers by itself, but `docker compose logs` shows 
 
 ## Development
 
-The project uses [uv](https://docs.astral.sh/uv/) and Python 3.14.
+The project uses [uv](https://docs.astral.sh/uv/) and Python 3.14. The code is in
+`src/oiltank/`:
+
+| Module | Does |
+|---|---|
+| `sources/` | Frames: go2rtc over HTTP (`http.py`) or image files (`files.py`) |
+| `geometry.py`, `readers/`, `pipeline.py` | Align, rectify and read a burst; pure |
+| `calibration.py`, `calibrate.py` | The calibration model, and the tools behind `oiltank calibrate` |
+| `filter.py`, `history.py`, `archive.py` | Filtering and derived values (pure), SQLite history, the frame archive |
+| `publish/` | Home Assistant discovery and state (pure), and the MQTT connection |
+| `service.py` | The service loop |
+| `annotate.py` | The gauge, diagnostic and grid images |
+| `config.py`, `model.py`, `cli/` | Settings, shared data types, the command line |
+
+[CLAUDE.md](CLAUDE.md) has the design rules that keep these apart.
 
 ```sh
 uv sync                                       # create .venv from uv.lock
@@ -643,13 +727,19 @@ non-editable virtualenv, which are copied into
 [`gcr.io/distroless/cc-debian12:nonroot`](https://github.com/GoogleContainerTools/distroless):
 
 - no shell or package manager in the runtime image;
-- runs as uid/gid **65532**;
-- works with a **read-only root filesystem** and **all capabilities dropped**:
+- runs as uid/gid **65532**, never root;
+- works with a **read-only root filesystem**, **all capabilities dropped** and
+  `no-new-privileges`, which is how `docker-compose.yml` runs it. The only writable place is the
+  `./data` mount:
   ```sh
   docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges oiltank:dev --version
   ```
 - zlib is the only system library added on top of distroless, because the numpy and OpenCV wheels
-  link against it.
+  link against it;
+- nothing from the checkout gets into the image except the code and its lock file
+  (`.dockerignore` is an allowlist). Settings and credentials come from `.env` at run time, and
+  credentials are never logged;
+- it only makes outbound connections, to go2rtc and the MQTT broker. It listens on no ports.
 
 ## Roadmap
 
@@ -661,9 +751,19 @@ non-editable virtualenv, which are copied into
 - [x] **M5** Service loop: filtering, history, refill detection, usage rate, Read now button,
       gauge image, healthcheck
 - [x] **M6** Frame archive and delivery `capture` mode
-- [ ] **M7** Documentation pass
-- [ ] *Later:* ONNX reader with GPU (CUDA) image, model trained on archived frames, tank volume
-      chart
+- [x] **M7** Documentation pass
+
+Later:
+
+- **A learned reader.** Train a small model on the archive's labelled strips and run it with
+  ONNX Runtime, on the CPU or on an NVIDIA GPU (a `gpu` image variant with
+  `onnxruntime-gpu`, enabled through config and the commented `deploy:` block in
+  `docker-compose.yml`). The reader interface and the per-row score format are already shared.
+- **A tank volume chart**, for gauges whose marks aren't fractions of volume.
+- **Calibration points from a delivery capture and its ticket**, worked out automatically.
+- **A learned background model** of the wall behind the dome, to separate the disc from clutter.
+- **A direct RTSP source** (PyAV, as an optional extra) for setups without go2rtc.
+- **CI**: tests and image builds on every push.
 
 ## License
 

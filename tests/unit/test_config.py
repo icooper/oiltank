@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -105,3 +106,81 @@ def test_env_example_lists_every_setting() -> None:
     assert listed == known_variables()
     # ...and parses as valid settings.
     Settings(_env_file=REPO / ".env.example")
+
+
+# ---- the docs agree with the models -------------------------------------------------------------
+
+
+def _sections() -> dict[str, type[_Section]]:
+    return {
+        name: field.annotation
+        for name, field in Settings.model_fields.items()
+        if isinstance(field.annotation, type) and issubclass(field.annotation, _Section)
+    }
+
+
+def _default(variable: str) -> object:
+    """The model default behind an OILTANK_... variable."""
+    rest = variable.removeprefix("OILTANK_").lower()
+    for section, model in _sections().items():
+        if rest.startswith(f"{section}_"):
+            value = model.model_fields[rest.removeprefix(f"{section}_")].default
+            return value.get_secret_value() if hasattr(value, "get_secret_value") else value
+    return Settings.model_fields[rest].default
+
+
+def _matches(documented: str, value: object) -> bool:
+    text = documented.strip()
+    if value is None:
+        return text.lower() == "none"
+    if isinstance(value, bool):
+        return text.lower() == str(value).lower()
+    if isinstance(value, int | float):
+        try:
+            return float(text) == float(value)
+        except ValueError:
+            return False
+    return text == str(value)
+
+
+def _readme_table() -> dict[str, str]:
+    """Variable -> documented default, from the README's configuration table.
+
+    Rows may list several variables of one section, later ones abbreviated to ``_KEY``, with one
+    default each (or one default for all).
+    """
+    documented: dict[str, str] = {}
+    for line in (REPO / "README.md").read_text().splitlines():
+        if not line.startswith("| `OILTANK_"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        names = re.findall(r"`(OILTANK_[A-Z_]+|_[A-Z_]+)`", cells[0])
+        full = names[0]
+        rest = full.removeprefix("OILTANK_").lower()
+        section = next((s for s in _sections() if rest.startswith(f"{s}_")), None)
+        prefix = f"OILTANK_{section.upper()}" if section else "OILTANK"
+        variables = [full] + [prefix + n for n in names[1:]]
+        defaults = [d.strip() for d in cells[1].split(",")]
+        if len(defaults) == 1:
+            defaults *= len(variables)
+        assert len(defaults) == len(variables), line
+        documented |= dict(zip(variables, defaults, strict=True))
+    return documented
+
+
+def test_readme_configuration_table_matches_the_models() -> None:
+    documented = _readme_table()
+    assert set(documented) == known_variables()
+    wrong = {v: d for v, d in documented.items() if not _matches(d, _default(v))}
+    assert not wrong, f"README defaults differ from the code: {wrong}"
+
+
+def test_env_example_defaults_match_the_models() -> None:
+    commented = {}
+    for line in (REPO / ".env.example").read_text().splitlines():
+        m = re.fullmatch(r"#\s*(OILTANK_[A-Z_]+)=(.*)", line.strip())
+        if m:
+            commented[m.group(1)] = m.group(2)
+    assert commented  # the commented-out lines are documented defaults
+    wrong = {v: d for v, d in commented.items() if not _matches(d, _default(v))}
+    assert not wrong, f".env.example defaults differ from the code: {wrong}"

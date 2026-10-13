@@ -93,11 +93,14 @@ class MqttLink:
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_message = self._on_message
+        self._client.on_subscribe = self._on_subscribe
+        self._subscription: int | None = None  # mid of the pending SUBSCRIBE
 
     # ---- lifecycle -----------------------------------------------------------------------------
 
     def start(self, timeout_s: float = 15.0, *, keep_trying: bool = False) -> bool:
-        """Connect, and wait until the broker accepts us. Reconnects happen in the background.
+        """Connect, and wait until the broker accepts us and our subscriptions (so a Read now
+        press can't slip through before them). Reconnects happen in the background.
 
         Raises :class:`MqttError` if that takes longer than ``timeout_s``, unless ``keep_trying``:
         then it returns False and paho keeps trying in the background (for the service).
@@ -146,10 +149,31 @@ class MqttLink:
             log.error("%s", self._failure)
             return
         log.info("connected to %s:%d", self._host, self._port)
-        if self._announce:
-            client.subscribe([(self.topics.command, QOS), (self.topics.ha_status, QOS)])
-            self.publish_discovery()
-            self._publish(self.topics.availability, ONLINE)
+        if not self._announce:
+            self._ready()
+            return
+        _, self._subscription = client.subscribe(
+            [(self.topics.command, QOS), (self.topics.ha_status, QOS)]
+        )
+        self.publish_discovery()
+        self._publish(self.topics.availability, ONLINE)
+
+    def _on_subscribe(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        mid: int,
+        reason_codes: list[ReasonCode],
+        properties: Any,
+    ) -> None:
+        if mid != self._subscription:
+            return
+        if any(rc.is_failure for rc in reason_codes):
+            log.error("the broker refused our subscriptions: %s", reason_codes)
+        self._ready()
+
+    def _ready(self) -> None:
+        """Connected, and (when announcing) subscribed: commands will reach us from now on."""
         self._connected.set()
         self._events.put(Event(EventKind.CONNECTED))
 

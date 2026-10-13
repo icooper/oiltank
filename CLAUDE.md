@@ -15,7 +15,8 @@ A containerized service that fetches 4K JPEG frames of a heating-oil tank's floa
 (`/api/frame.jpeg?src=<stream>`), finds the gauge's indicator disc with classical CV, converts its
 position to a fill level, and publishes it to Home Assistant through MQTT discovery. The camera is
 always in IR mode, so frames are grayscale. The design leaves room to swap in an ONNX model on
-CUDA later through config.
+CUDA later through config. The MVP (milestones M0–M7) is complete; README.md is the user-facing
+documentation and has the post-MVP roadmap.
 
 ## Commands
 
@@ -32,6 +33,8 @@ uv run oiltank read -c samples/calibration.yaml --image samples/frame0.jpg
 uv run oiltank calibrate show -c samples/calibration.yaml --diagnostic check.jpg
 uv run oiltank read -c samples/calibration.yaml   # live camera, configured in .env
 uv run oiltank grab --out frame.jpg               # one frame, exactly as go2rtc sends it
+uv run oiltank run                       # the service (needs data/calibration.yaml and MQTT)
+uv run oiltank history / healthcheck / capture --every 10s --duration 1m
 uv add <pkg> / uv add --dev <pkg>        # dependencies; commit uv.lock alongside pyproject.toml
 docker build -t oiltank:dev .            # distroless runtime image (docker-compose.yml for deploys)
 docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev read -c /samples/calibration.yaml --image /samples/frame0.jpg
@@ -47,7 +50,11 @@ flowchart LR
     source["source<br/>sources/"] --> align["align<br/>geometry.py"] --> rectify["rectify<br/>geometry.py"]
     rectify --> reader["reader<br/>readers/"] --> calibration["calibration<br/>calibration.py"]
     calibration --> filter["filter<br/>filter.py"] --> publish["publish<br/>publish/"]
+    filter --> history["history<br/>history.py"]
+    reader --> archive["archive<br/>archive.py"]
 ```
+
+`service.py` runs this loop; `pipeline.py` is the source-to-calibration part for one burst.
 
 - `config.py`: settings from environment variables and `.env` (pydantic-settings, which reads
   `.env` with python-dotenv). See the conventions below.
@@ -74,9 +81,14 @@ flowchart LR
   12-25% too small locks onto a highlight about 12 px above the disc with full confidence. So the
   scan follows the region of sizes that agree with the *starting* size and never just maximizes a
   score; on these frames that's a trap, because a template twice the disc height scores best.
-- `cli/`: Typer app. `__init__.py` has `read`, `calibrate.py` the `calibrate` sub-commands,
-  `common.py` the shared helpers. Use plain `X = tuple[...]` aliases in option annotations;
-  Typer can't read `type X = ...` statements.
+- `cli/`: Typer app. `__init__.py` has `read` and `grab` and registers the rest:
+  `calibrate.py` (the `calibrate` sub-commands), `mqtt.py` (`mqtt publish/clear`), `service.py`
+  (`run`, `healthcheck`, `history`), `capture.py`. `common.py` has the shared helpers. Exit codes:
+  0 OK, 1 no reading / camera or broker unreachable, 2 configuration or usage error. Use plain
+  `X = tuple[...]` aliases in option annotations; Typer can't read `type X = ...` statements.
+- `annotate.py`: the published gauge image (≤ 50 KB), the diagnostic view, the coordinate grid.
+  OpenCV 5's fonts change their spacing with stroke thickness, so text outlines are drawn as offset
+  copies.
 - `pipeline.py`, `filter.py` and `publish/discovery.py` are **pure**: no I/O, easy to test.
 - `filter.py`: `LevelFilter`, a state machine over `Observation`s that handles the confidence gate,
   median smoothing, confirmed refills, the Theil-Sen usage rate and days left. It's a function of
@@ -93,10 +105,8 @@ flowchart LR
 - `publish/mqtt.py`: paho-mqtt 2.x. `MqttLink` sets a last will (`offline`). On every (re)connect
   it subscribes and announces `online` and discovery. **CV never runs in paho callbacks**:
   callbacks do only cheap MQTT work and put `Event`s (`READ_NOW`, `HA_ONLINE`, `CONNECTED`) on a
-  queue that the main loop handles (`cli/mqtt.py` now, `service.py` in M5).
+  queue that the main loop handles (`service.py`, or `cli/mqtt.py` for publishing by hand).
 - `model.py`: the typed, frozen dataclasses passed between stages.
-
-Not every module exists yet; the README's roadmap and the milestone list track progress.
 
 ## Conventions
 
@@ -106,7 +116,9 @@ Not every module exists yet; the README's roadmap and the milestone list track p
   `OILTANK_CAMERA_BURST_FRAMES`). Sections are split off at the first underscore
   (`env_nested_max_split=1`). So sections stay one level deep, and no top-level setting may start
   with a section name and `_`; `test_config.py` enforces this. Unknown `OILTANK_` names are errors.
-  Every setting must also be listed in `.env.example`; a test checks that too.
+  Adding a setting means adding it to `config.py`, to `.env.example` (as a commented-out default)
+  and to the README's configuration table; `test_config.py` checks all three agree, names and
+  defaults.
 - `.env` is the whole container configuration. Compose passes it through, with no `environment:`
   block. Only the human writes it, and it holds real credentials: never print their values, copy
   the file, or commit it. To check it, load `Settings` and print which fields are set.
@@ -114,6 +126,9 @@ Not every module exists yet; the README's roadmap and the milestone list track p
   `tests/data/discovery.json` (`UPDATE_GOLDEN=1 uv run pytest tests/unit/test_discovery.py`); review
   the diff. Unknown values are `null` in the state JSON, which templates render as `None` and HA
   shows as unknown.
+- `docs/images/` is generated from the samples: `uv run oiltank read -c samples/calibration.yaml
+  --image samples/frame0.jpg --image samples/frame1.jpg --annotate docs/images/gauge.jpg
+  --diagnostic docs/images/diagnostic.jpg`, then the diagnostic shrunk to 80% at JPEG quality 82.
 - `opencv-python-headless` is OpenCV **5.x**. `cv2` returns loosely typed `MatLike`; convert with
   `np.asarray(x, dtype=...)` at module boundaries.
 
@@ -131,8 +146,9 @@ Not every module exists yet; the README's roadmap and the milestone list track p
   from hard-coded endpoints. They pin only the owner's reading: bursts read 98%.
 - Synthetic CV tests are built from the sample strip: moving the disc, adding noise, JPEG
   re-encoding, frame shifts, and removing the disc.
-- Integration tests are marked `integration` and need Docker. `tests/integration/test_mqtt.py`
-  starts an `eclipse-mosquitto:2.0.20` container per module and gives each test its own device id.
+- Integration tests are marked `integration` and need Docker. `tests/integration/conftest.py`
+  starts an `eclipse-mosquitto:2.0.20` container per module, and each test gets its own device id.
+  `test_service.py` runs `oiltank run` as a real process against `tests/fakes.py`'s fake go2rtc.
 - Tests never see the developer's `.env` or `OILTANK_*` variables: the autouse `isolated_settings`
   fixture removes them and runs each test in an empty working directory. Camera tests use
   `httpx.MockTransport` (`test_http_source.py`) or a fake go2rtc on localhost (`test_cli_camera.py`).
