@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from oiltank import __version__
 from oiltank.annotate import encode_jpeg, render, render_diagnostic
 from oiltank.calibration import CalibrationError
-from oiltank.cli import calibrate
+from oiltank.cli import calibrate, mqtt
 from oiltank.cli.common import (
     BurstFrames,
     BurstSpacing,
@@ -38,6 +38,7 @@ app = typer.Typer(
     add_completion=False,
 )
 app.add_typer(calibrate.app, name="calibrate")
+app.add_typer(mqtt.app, name="mqtt")
 
 
 def _print_version(value: bool) -> None:

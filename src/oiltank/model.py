@@ -134,3 +134,20 @@ class Measurement:
     @property
     def ok(self) -> bool:
         return self.problem is None and self.fraction is not None
+
+
+@dataclass(frozen=True, slots=True)
+class LevelState:
+    """What gets published: the level now, plus what the service derives from history (M5)."""
+
+    ts: datetime
+    fraction: float | None
+    volume: float | None
+    confidence: float
+    t: float | None
+    problem: Problem | None
+    usage_rate: float | None = None
+    """Volume per day."""
+    days_left: float | None = None
+    last_fill: datetime | None = None
+    last_fill_volume: float | None = None

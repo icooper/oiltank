@@ -78,8 +78,10 @@ flowchart LR
   `common.py` the shared helpers. Use plain `X = tuple[...]` aliases in option annotations;
   Typer can't read `type X = ...` statements.
 - `pipeline.py` and `publish/discovery.py` are **pure**: no I/O, easy to test.
-- `publish/mqtt.py`: paho-mqtt 2.x. **CV never runs in paho callbacks**; callbacks only put
-  requests on a queue that `service.py` handles.
+- `publish/mqtt.py`: paho-mqtt 2.x. `MqttLink` sets a last will (`offline`). On every (re)connect
+  it subscribes and announces `online` and discovery. **CV never runs in paho callbacks**:
+  callbacks do only cheap MQTT work and put `Event`s (`READ_NOW`, `HA_ONLINE`, `CONNECTED`) on a
+  queue that the main loop handles (`cli/mqtt.py` now, `service.py` in M5).
 - `model.py`: the typed, frozen dataclasses passed between stages.
 
 Not every module exists yet; the README's roadmap and the milestone list track progress.
@@ -96,8 +98,10 @@ Not every module exists yet; the README's roadmap and the milestone list track p
 - `.env` is the whole container configuration. Compose passes it through, with no `environment:`
   block. Only the human writes it, and it holds real credentials: never print their values, copy
   the file, or commit it. To check it, load `Settings` and print which fields are set.
-- Adding or changing an HA entity means editing `publish/discovery.py` and updating its golden JSON
-  test.
+- Adding or changing an HA entity means editing `publish/discovery.py` and regenerating the golden
+  `tests/data/discovery.json` (`UPDATE_GOLDEN=1 uv run pytest tests/unit/test_discovery.py`); review
+  the diff. Unknown values are `null` in the state JSON, which templates render as `None` and HA
+  shows as unknown.
 - `opencv-python-headless` is OpenCV **5.x**. `cv2` returns loosely typed `MatLike`; convert with
   `np.asarray(x, dtype=...)` at module boundaries.
 
@@ -115,7 +119,8 @@ Not every module exists yet; the README's roadmap and the milestone list track p
   from hard-coded endpoints. They pin only the owner's reading: bursts read 98%.
 - Synthetic CV tests are built from the sample strip: moving the disc, adding noise, JPEG
   re-encoding, frame shifts, and removing the disc.
-- Integration tests are marked `integration` and need Docker (mosquitto).
+- Integration tests are marked `integration` and need Docker. `tests/integration/test_mqtt.py`
+  starts an `eclipse-mosquitto:2.0.20` container per module and gives each test its own device id.
 - Tests never see the developer's `.env` or `OILTANK_*` variables: the autouse `isolated_settings`
   fixture removes them and runs each test in an empty working directory. Camera tests use
   `httpx.MockTransport` (`test_http_source.py`) or a fake go2rtc on localhost (`test_cli_camera.py`).

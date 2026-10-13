@@ -4,10 +4,11 @@ Reads the float gauge on a residential heating-oil tank from an IP camera and pu
 to [Home Assistant](https://www.home-assistant.io/) over MQTT, with entities that appear
 automatically through MQTT discovery, the way Zigbee2MQTT's do.
 
-> **Status: early development (milestone M3).** `oiltank read` reads the gauge from go2rtc or
-> from image files, and the `oiltank calibrate` commands create, check and adjust a calibration.
-> MQTT publishing is next; see [Roadmap](#roadmap). Sections marked *planned* describe behaviour
-> that isn't built yet.
+> **Status: early development (milestone M4).** `oiltank read` reads the gauge from go2rtc or
+> from image files, the `oiltank calibrate` commands create, check and adjust a calibration, and
+> `oiltank mqtt publish` sends readings to Home Assistant. The long-running service (filtering,
+> history, refill detection, usage rate) is next; see [Roadmap](#roadmap). Sections marked
+> *planned* describe behaviour that isn't built yet.
 
 ## How it works
 
@@ -359,17 +360,65 @@ oil delivery, which is the best way to collect points along the whole scale.
 
 ## Home Assistant
 
-*Planned (milestones M4–M5).* One device, **Oil Tank**, with these entities:
+The tank appears as one device, **Oil Tank**, through
+[MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery). No custom
+integration is needed: HA's MQTT integration and a broker are enough.
 
-- level (%) and volume (gal)
-- usage rate (gal/day) and days left
-- last fill time and last fill amount
-- an annotated gauge image
-- a **Read now** button
-- a problem flag
-- diagnostic confidence and last-reading entities
+| Entity | Type | Notes |
+|---|---|---|
+| Level | sensor, % | |
+| Volume | sensor, `volume_storage` | Level × `OILTANK_TANK_CAPACITY`, in `OILTANK_TANK_UNIT` |
+| Usage rate | sensor, gal/d | *M5*; unknown until there's enough history |
+| Days left | sensor, `duration` | *M5*; until `OILTANK_TANK_RESERVE` |
+| Last fill, Last fill amount | sensors, `timestamp` / `volume` | *M5*; from refill detection |
+| Gauge | image | The annotated gauge, updated with each reading |
+| Read now | button | Takes and publishes a reading straight away |
+| Problem | binary sensor, `problem` | On when there's no trustworthy reading; the `reason` attribute says why |
+| Confidence, Last reading | diagnostic sensors | |
+| Gauge position | diagnostic sensor, disabled by default | The raw position `t` along the axis |
 
-The MQTT topic reference and example automations will go here.
+All entities are unavailable when the service isn't connected: it announces `online` when it
+connects and sets a last will of `offline`.
+
+### Publishing by hand
+
+Until the service (M5) runs continuously, `oiltank mqtt publish` takes one reading and publishes
+everything. `--listen 300` keeps it connected for five minutes to answer **Read now**:
+
+```sh
+oiltank mqtt publish --listen 300
+# connected to homeassistant.lan:1883; discovery on homeassistant/device/oil_tank/config
+# level 97.9%, 245 gal (confidence 1.00, 5 frame(s))
+# published to oiltank/oil_tank/state and oiltank/oil_tank/image
+```
+
+`oiltank mqtt clear` removes the device from Home Assistant, and its retained messages from the
+broker.
+
+### Topics
+
+The base topic is `<OILTANK_MQTT_TOPIC_PREFIX>/<OILTANK_DEVICE_ID>`, `oiltank/oil_tank` by
+default. Every message is published with QoS 1.
+
+| Topic | Retained | Payload |
+|---|---|---|
+| `homeassistant/device/oil_tank/config` | yes | Discovery: the device and all its entities |
+| `oiltank/oil_tank/availability` | yes | `online` / `offline` (also the last will) |
+| `oiltank/oil_tank/state` | yes | JSON, below |
+| `oiltank/oil_tank/image` | yes | The annotated gauge as a JPEG of at most 50 KB |
+| `oiltank/oil_tank/cmd/read` | no | `PRESS` from the Read now button |
+
+```json
+{"level": 97.9, "volume": 244.6, "confidence": 1.0, "t": 0.8179, "usage_rate": null,
+ "days_left": null, "last_fill": null, "last_fill_volume": null, "problem": false,
+ "reason": null, "ts": "2026-10-13T03:29:34+00:00"}
+```
+
+`null` means "not known yet", and Home Assistant shows it as unknown. The service republishes
+discovery when it reconnects, and a few seconds after Home Assistant announces `online` on
+`homeassistant/status`. So a restart of either side recovers by itself.
+
+*Planned (M5/M7):* example dashboard card and automations (low level, refill notification).
 
 ## Accuracy and limitations
 
@@ -391,6 +440,14 @@ Camera problems, from `read`, `grab` or `--camera`:
 | `answered HTTP 500: ...` | go2rtc couldn't get a frame from the camera. go2rtc's message follows. |
 | `frame is 640x360 but the calibration was made at 3840x2160` | The URL serves a substream or a snapshot rather than the main stream. |
 | `unknown setting(s) ...` | A misspelt `OILTANK_` name in `.env` or the shell. |
+
+MQTT problems, from `oiltank mqtt`:
+
+| Message | Cause |
+|---|---|
+| `refused the connection: Not authorized` | Check `OILTANK_MQTT_USERNAME` and `OILTANK_MQTT_PASSWORD`. |
+| `no answer from host:1883` | Wrong host or port, or the broker is down. TLS brokers usually listen on 8883 with `OILTANK_MQTT_TLS=true`. |
+| Device doesn't appear in HA | Check that HA's MQTT integration uses the same broker and discovery prefix (`homeassistant`). `mosquitto_sub -v -t 'homeassistant/device/#'` should show the config message. |
 
 *Planned:* the `problem` reasons Home Assistant will show (`camera_unreachable`, `camera_moved`,
 `low_confidence`), and how to check discovery with `mosquitto_sub`.
@@ -423,7 +480,12 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
 - `tests/unit/test_http_source.py` and `test_cli_camera.py`: the go2rtc source against a mocked
   transport, and the camera commands against a fake go2rtc on localhost (auth, retries, timeouts,
   wrong stream, duplicates);
-- `tests/unit/test_config.py`: settings, `.env` and unknown-name detection.
+- `tests/unit/test_config.py`: settings, `.env` and unknown-name detection;
+- `tests/unit/test_discovery.py`: the discovery message, against the golden file
+  `tests/data/discovery.json`, and the state payload;
+- `tests/integration/test_mqtt.py` (`-m integration`, needs Docker): a real Mosquitto broker,
+  covering retained discovery, state and image, the button and HA-restart events, the last will
+  and `clear`.
 
 Tests never read your `.env` or `OILTANK_*` variables: they run in an empty working directory with
 those variables removed.
@@ -458,7 +520,7 @@ non-editable virtualenv, which are copied into
 - [x] **M1** Geometry, calibration model, classical reader, annotated output
 - [x] **M2** Calibration CLI
 - [x] **M3** go2rtc HTTP frame source
-- [ ] **M4** MQTT discovery, state and availability
+- [x] **M4** MQTT discovery, state and availability
 - [ ] **M5** Service loop: filtering, history, refill detection, usage rate, Read now button,
       gauge image, healthcheck
 - [ ] **M6** Frame archive and delivery `capture` mode
