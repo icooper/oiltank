@@ -228,8 +228,8 @@ parts:
   `OILTANK_ARCHIVE_FULL_FRAME_HOURS` (6) and for every problem reading.
 
 That's about 3.3 MB a day at the default settings: a 21 KB strip per reading and four full frames.
-The oldest records are deleted beyond `OILTANK_ARCHIVE_MAX_MB` (2000), which lasts about 20
-months. Archived frames can be read again with any calibration, which
+Beyond `OILTANK_ARCHIVE_MAX_MB` (2000), whole records are deleted, oldest first, until the
+archive is back under 95% of the limit. That's about 20 months. Archived frames can be read again with any calibration, which
 makes them useful for checking a calibration change against past readings:
 `oiltank read --image data/archive/2026-10-13/035920Z-frame.jpg`.
 

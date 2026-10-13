@@ -6,7 +6,7 @@ import cv2
 import pytest
 import typer
 
-from oiltank.archive import Archive, ArchivePolicy
+from oiltank.archive import EVICT_TO, Archive, ArchivePolicy
 from oiltank.calibration import Calibration
 from oiltank.cli.common import parse_duration
 from oiltank.geometry import Aligner
@@ -94,11 +94,65 @@ def test_size_limit_drops_the_oldest(
         frames = _frames_at(sample_frames[:1], t0 + timedelta(minutes=5 * k))
         archive.record(measure(frames, aligner, reader, calibration), frames, calibration)
     total = sum(f.stat().st_size for f in tmp_path.rglob("*") if f.is_file())
-    assert total <= 1_500_000
+    assert total <= 1_500_000 * EVICT_TO
     assert archive.size() == total
     assert not (tmp_path / "2026-10-12").exists()  # the old day went first, directory too
     newest = sorted((tmp_path / "2026-10-13").glob("*.json"))[-1]
     assert newest.name == "002500Z.json"
+
+
+def _assert_whole_records(root: Path) -> None:
+    """Every file belongs to a record whose JSON exists, and every JSON's files exist."""
+    for day in root.iterdir():
+        names = {f.name for f in day.iterdir()}
+        for name in names:
+            if name.endswith(".json"):
+                meta = json.loads((day / name).read_text())
+                assert {meta["strip"], meta["frame"]} - {None} <= names
+            else:
+                stem = name.removesuffix("-strip.png").removesuffix("-frame.jpg")
+                assert f"{stem}.json" in names, f"{name} outlived its record"
+
+
+def test_eviction_deletes_whole_records(
+    tmp_path: Path,
+    sample_frames: list[Frame],
+    aligner: Aligner,
+    reader: GaugeReader,
+    calibration: Calibration,
+) -> None:
+    archive = Archive(tmp_path, ArchivePolicy(max_bytes=1_000_000, full_frame_every=timedelta(0)))
+    t0 = datetime(2026, 10, 12, 23, 59, tzinfo=UTC)
+    m = None
+    for k in range(10):  # in pairs within the same second (-2 records), across midnight
+        frames = _frames_at(sample_frames[:1], t0 + timedelta(minutes=k // 2))
+        m = m or measure(frames, aligner, reader, calibration)
+        archive.record(m, frames, calibration)
+        _assert_whole_records(tmp_path)
+        assert archive.size() <= 1_000_000
+    assert not list(tmp_path.rglob(".*"))  # no temporary files left behind
+    assert sorted(f.name for f in (tmp_path / "2026-10-13").glob("*.json"))[-2:] == [
+        "000300Z-2.json",
+        "000300Z.json",
+    ]
+
+
+def test_a_crashed_write_is_cleaned_up_with_its_day(
+    tmp_path: Path,
+    sample_frames: list[Frame],
+    aligner: Aligner,
+    reader: GaugeReader,
+    calibration: Calibration,
+) -> None:
+    old_day = tmp_path / "2026-10-01"
+    old_day.mkdir()
+    (old_day / ".120000Z.json.tmp").write_bytes(b"{")
+    (old_day / "120000Z-strip.png").write_bytes(b"png")  # its record never got its JSON
+    archive = Archive(tmp_path, ArchivePolicy(max_bytes=700_000, full_frame_every=timedelta(0)))
+    for k in range(3):
+        frames = _frames_at(sample_frames[:1], datetime(2026, 10, 13, 0, k, tzinfo=UTC))
+        archive.record(measure(frames, aligner, reader, calibration), frames, calibration)
+    assert not old_day.exists()
 
 
 def test_same_second_records_dont_collide(

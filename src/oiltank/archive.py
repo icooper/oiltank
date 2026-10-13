@@ -7,13 +7,16 @@ A record is ``<root>/<UTC date>/<UTC time>Z`` plus:
 - ``-strip.png``: the rectified gauge strip that produced the reading (lossless).
 - ``-frame.jpg``: the full camera frame exactly as received, when this record keeps one.
 
-The rolling archive keeps a full frame every ``full_frame_every`` and for every problem reading,
-and deletes the oldest files beyond ``max_bytes``. A delivery capture uses the same format with
-every frame kept and no limit.
+The rolling archive keeps a full frame every ``full_frame_every`` and for every problem reading.
+Beyond ``max_bytes`` it deletes whole records, oldest first, down to ``EVICT_TO`` of the limit; a
+record's JSON goes first and is written last (atomically), so a record whose JSON exists has all
+its files. A delivery capture uses the same format with every frame kept and no limit.
 """
 
+import itertools
 import json
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -27,6 +30,11 @@ from oiltank.config import ArchiveSettings
 from oiltank.model import Frame, FrameResult, Measurement
 
 log = logging.getLogger(__name__)
+
+EVICT_TO = 0.95
+"""Once over the size limit, delete down to this fraction of it, so that the whole archive isn't
+scanned again after every new record."""
+_FILE_RE = re.compile(r"(?P<time>\d{6}Z)(?:-(?P<n>\d+))?(?P<part>\.json|-strip\.png|-frame\.jpg)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +153,9 @@ class Archive:
                 self._write(path, data)
                 meta["frame"] = path.name
         json_path = stem.with_name(stem.name + ".json")
-        self._write(json_path, json.dumps(meta, indent=1).encode())
+        tmp = json_path.with_name(f".{json_path.name}.tmp")
+        self._write(tmp, json.dumps(meta, indent=1).encode())
+        tmp.replace(json_path)  # last, and all at once: the JSON says the record is complete
         self._enforce_limit()
         return json_path
 
@@ -182,14 +192,24 @@ class Archive:
         limit = self._policy.max_bytes
         if limit is None or self.size() <= limit:
             return
-        files = sorted(f for f in self.root.rglob("*") if f.is_file())  # names sort by time
-        for f in files:
-            if self.size() <= limit:
+        files = sorted((f for f in self.root.rglob("*") if f.is_file()), key=_record_key)
+        for _, record in itertools.groupby(files, key=_record_key):
+            if self.size() <= limit * EVICT_TO:
                 break
-            size = f.stat().st_size
-            f.unlink()
-            self._size = self.size() - size
+            for f in sorted(record, key=lambda f: f.suffix != ".json"):  # the JSON first
+                size = f.stat().st_size
+                f.unlink()
+                self._size = self.size() - size
         for day in sorted(self.root.iterdir()):
             if day.is_dir() and not any(day.iterdir()):
                 day.rmdir()
         log.info("archive trimmed to %.0f MB", self.size() / 1e6)
+
+
+def _record_key(path: Path) -> tuple[str, str, int]:
+    """``(day, time, n)``: the same for all of a record's files, in the order records were made.
+    Any other file (a temporary file left by a crash) is a record of its own."""
+    m = _FILE_RE.fullmatch(path.name)
+    if m is None:
+        return path.parent.name, path.name, 0
+    return path.parent.name, m["time"], int(m["n"] or 1)

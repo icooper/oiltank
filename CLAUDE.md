@@ -108,8 +108,10 @@ flowchart LR
   - anything else carries `t` unchanged and logs a warning.
 - `archive.py`: one record per reading under `data/archive/<UTC date>/`. A record is the JSON
   (reading, alignment, strip row ↔ t labels), the strip PNG, and sometimes the full frame's
-  original bytes. The full-frame schedule is independent of problem frames. Oldest files go first
-  beyond the size cap. `oiltank capture` writes the same format to `data/captures/` with no cap.
+  original bytes. The full-frame schedule is independent of problem frames. The JSON is written
+  last and atomically, and beyond the size cap whole records go oldest first (JSON first, down to
+  `EVICT_TO`). So a record whose JSON exists has all its files. `oiltank capture` writes the same
+  format to `data/captures/` with no cap.
 - `service.py`: one thread. It waits on the event queue (`READ_NOW`, `HA_ONLINE`, `CONNECTED`,
   `STOP`) or the next interval, then runs a cycle: grab → measure → filter → store → publish. It
   writes `data/heartbeat` at least every 30 s for `oiltank healthcheck`. `cli/service.py` installs
