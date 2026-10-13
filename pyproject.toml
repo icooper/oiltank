@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Reads a heating-oil tank float gauge from IP camera frames and publishes the level to Home Assistant over MQTT."
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE.md"]
 authors = [{ name = "Ian Cooper" }]
 requires-python = ">=3.14"
 dependencies = [
