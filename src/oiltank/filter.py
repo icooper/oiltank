@@ -83,6 +83,14 @@ class Fill:
 
 
 @dataclass(frozen=True, slots=True)
+class Step:
+    accepted: bool
+    """The reading passed the gate (it may still be held back as a possible refill)."""
+    fill: Fill | None
+    """A refill this reading confirmed."""
+
+
+@dataclass(frozen=True, slots=True)
 class Update:
     state: LevelState
     accepted: bool
@@ -129,9 +137,16 @@ class LevelFilter:
 
     def replay(self, observations: Iterable[Observation]) -> None:
         for obs in observations:
-            self.update(obs)
+            self.advance(obs)
 
     def update(self, obs: Observation) -> Update:
+        """Take one reading and return what to publish now."""
+        step = self.advance(obs)
+        return Update(self.state(obs.ts), accepted=step.accepted, fill=step.fill)
+
+    def advance(self, obs: Observation) -> Step:
+        """Take one reading without working out the state. The usage trend is the costly part of
+        :meth:`state`, so replays use this and ask for the state once at the end."""
         p = self._p
         self._confidence = obs.confidence
         good = (
@@ -141,7 +156,7 @@ class LevelFilter:
             self._failures += 1
             if self._failures >= p.failures_for_problem:
                 self._problem = obs.problem or Problem.LOW_CONFIDENCE
-            return Update(self.state(obs.ts), accepted=False, fill=None)
+            return Step(accepted=False, fill=None)
 
         self._failures = 0
         self._problem = None
@@ -162,7 +177,7 @@ class LevelFilter:
             self._pending = None  # an unconfirmed jump was an outlier
             self._samples.append(sample)
             self._trim(obs.ts)
-        return Update(self.state(obs.ts), accepted=True, fill=fill)
+        return Step(accepted=True, fill=fill)
 
     def _trim(self, now: datetime) -> None:
         cutoff = now - timedelta(days=self._p.usage_window_days)

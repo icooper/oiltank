@@ -1,3 +1,4 @@
+import random
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -146,6 +147,41 @@ def test_replay_reproduces_the_state() -> None:
     replayed.replay(observations)
     assert replayed.update(good(43, 0.95)).state.fraction == pytest.approx(0.95)
     assert last.last_fill == T0 + timedelta(hours=41)
+
+
+def mixed(n: int, seed: int) -> list[Observation]:
+    """Readings every 15 minutes with use, noise, outliers, failures and a refill."""
+    rng = random.Random(seed)
+    level, out = 0.6, []
+    for i in range(n):
+        hours = i / 4
+        if i == n // 2:
+            level = 0.95
+        level -= 2.0 / 24 / 4 / CAPACITY
+        roll = rng.random()
+        if roll < 0.05:
+            out.append(bad(hours, rng.choice([Problem.CAMERA_UNREACHABLE, Problem.CAMERA_MOVED])))
+        elif roll < 0.08:
+            out.append(good(hours, rng.uniform(0, 1)))  # a misread
+        else:
+            confidence = rng.choice([0.95, 0.9, 0.4])
+            out.append(good(hours, level + rng.gauss(0, 0.003), confidence))
+    return out
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_replay_matches_updating_reading_by_reading(seed: int) -> None:
+    observations = mixed(4 * 24 * 6, seed)
+    live = LevelFilter(FilterParams(), CAPACITY, reserve=25)
+    updates = [live.update(obs) for obs in observations]
+    stepped = LevelFilter(FilterParams(), CAPACITY, reserve=25)
+    steps = [stepped.advance(obs) for obs in observations]
+    assert [(u.accepted, u.fill) for u in updates] == [(s.accepted, s.fill) for s in steps]
+    assert any(s.fill for s in steps) and not all(s.accepted for s in steps)
+    replayed = LevelFilter(FilterParams(), CAPACITY, reserve=25)
+    replayed.replay(observations)
+    assert replayed.state(observations[-1].ts) == updates[-1].state
+    assert stepped.state(observations[-1].ts) == updates[-1].state
 
 
 def test_recalibrated_observation() -> None:
