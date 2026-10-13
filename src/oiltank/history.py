@@ -1,20 +1,25 @@
 """Every reading attempt and refill, in SQLite at ``<data_dir>/oiltank.db``.
 
 Readings keep the gauge position ``t`` as well as the fraction it mapped to at the time, so that
-after a recalibration the service can replay them with the new mapping. Refills are stored too, so
-"last fill" survives after it drops out of the replay window.
+after a recalibration the service can replay them with the new mapping. ``t`` is measured along the
+calibration's axis, so each reading also records which axis that was (its epoch, see
+:mod:`oiltank.epochs`) and is carried onto the current one when it's read back. Refills are stored
+too, so "last fill" survives after it drops out of the replay window.
 """
 
 import sqlite3
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Self
 
+from oiltank.calibration import Axis
+from oiltank.epochs import AxisEpoch, Change, carry, successor
 from oiltank.filter import Fill, Observation
 from oiltank.model import Problem
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS readings (
     id INTEGER PRIMARY KEY,
@@ -24,7 +29,8 @@ CREATE TABLE IF NOT EXISTS readings (
     t REAL,
     problem TEXT,
     accepted INTEGER NOT NULL,    -- passed the filter's gate
-    frames INTEGER NOT NULL
+    frames INTEGER NOT NULL,
+    epoch INTEGER                 -- the axis t is measured along (epochs.id)
 );
 CREATE INDEX IF NOT EXISTS readings_ts ON readings (ts);
 CREATE TABLE IF NOT EXISTS fills (
@@ -32,7 +38,21 @@ CREATE TABLE IF NOT EXISTS fills (
     before REAL NOT NULL,
     after REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS epochs (
+    id INTEGER PRIMARY KEY,
+    since TEXT NOT NULL,          -- first used (ISO 8601, UTC)
+    reference TEXT NOT NULL,      -- the calibration's reference_image
+    top_x REAL NOT NULL,
+    top_y REAL NOT NULL,
+    bottom_x REAL NOT NULL,
+    bottom_y REAL NOT NULL,
+    scale REAL NOT NULL,          -- the first epoch's t is scale * t + shift
+    shift REAL NOT NULL,
+    change TEXT NOT NULL,         -- how it followed the epoch before it
+    current INTEGER NOT NULL      -- 1 for the one in use
+);
 """
+_EPOCH_COLUMNS = "id, reference, top_x, top_y, bottom_x, bottom_y, scale, shift, change"
 
 
 class History:
@@ -45,6 +65,9 @@ class History:
             raise RuntimeError(f"{path} is from a newer oiltank (schema {version})")
         with self._db:
             self._db.executescript(_SCHEMA)
+            columns = {row[1] for row in self._db.execute("PRAGMA table_info(readings)")}
+            if "epoch" not in columns:  # schema 1
+                self._db.execute("ALTER TABLE readings ADD COLUMN epoch INTEGER")
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -61,11 +84,17 @@ class History:
     ) -> None:
         self.close()
 
-    def add(self, obs: Observation, *, accepted: bool, frames: int) -> None:
+    def add(
+        self, obs: Observation, *, accepted: bool, frames: int, epoch: AxisEpoch | None = None
+    ) -> None:
+        """Store a reading attempt; ``epoch`` is the axis its ``t`` was measured along."""
+        if epoch is not None and epoch.id is None:
+            raise ValueError("register the epoch before storing readings in it")
         with self._db:
             self._db.execute(
-                "INSERT INTO readings (ts, fraction, confidence, t, problem, accepted, frames) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO readings "
+                "(ts, fraction, confidence, t, problem, accepted, frames, epoch) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     obs.ts.isoformat(),
                     obs.fraction,
@@ -74,6 +103,7 @@ class History:
                     None if obs.problem is None else str(obs.problem),
                     int(accepted),
                     frames,
+                    None if epoch is None else epoch.id,
                 ),
             )
 
@@ -84,22 +114,88 @@ class History:
                 (fill.ts.isoformat(), fill.before, fill.after),
             )
 
-    def observations(self, since: datetime) -> list[Observation]:
+    def observations(self, since: datetime, *, onto: AxisEpoch | None = None) -> list[Observation]:
+        """Reading attempts from ``since`` on, oldest first.
+
+        With ``onto``, each ``t`` is carried onto that epoch's axis. The fractions are as stored;
+        recompute them from ``t`` with :meth:`Observation.recalibrated`.
+        """
         rows = self._db.execute(
-            "SELECT ts, fraction, confidence, t, problem FROM readings WHERE ts >= ? "
+            "SELECT ts, fraction, confidence, t, problem, epoch FROM readings WHERE ts >= ? "
             "ORDER BY ts, id",
             (since.isoformat(),),
         )
-        return [
-            Observation(
-                ts=datetime.fromisoformat(ts),
-                fraction=fraction,
-                confidence=confidence,
-                t=t,
-                problem=None if problem is None else Problem(problem),
+        epochs = {} if onto is None else self.epochs()
+        out = []
+        for ts, fraction, confidence, t, problem, epoch in rows:
+            src = epochs.get(epoch)
+            if onto is not None and src is not None and t is not None and epoch != onto.id:
+                a, b = carry(src, onto)
+                t = a * t + b
+            out.append(
+                Observation(
+                    ts=datetime.fromisoformat(ts),
+                    fraction=fraction,
+                    confidence=confidence,
+                    t=t,
+                    problem=None if problem is None else Problem(problem),
+                )
             )
-            for ts, fraction, confidence, t, problem in rows
-        ]
+        return out
+
+    # ---- epochs --------------------------------------------------------------------------------
+
+    def epoch_for(self, reference: str, axis: Axis) -> tuple[AxisEpoch, Change | None]:
+        """The epoch for ``axis`` on ``reference``, and how it follows the current one (None if
+        it is the current one). Stores nothing: an epoch not seen before comes back without an
+        ``id``. An axis used before gets its old epoch back."""
+        current = self.current_epoch()
+        if current is not None and current.matches(reference, axis):
+            return current, None
+        follows = successor(current, reference, axis)
+        known = next((e for e in self.epochs().values() if e.matches(reference, axis)), None)
+        return known or follows, follows.change
+
+    def register_epoch(
+        self, reference: str, axis: Axis, now: datetime
+    ) -> tuple[AxisEpoch, Change | None]:
+        """:meth:`epoch_for`, storing a new epoch and making the result the current one.
+
+        The first epoch also claims readings stored before there were epochs.
+        """
+        epoch, change = self.epoch_for(reference, axis)
+        if change is None:
+            return epoch, None
+        with self._db:
+            if epoch.id is None:
+                row = self._db.execute(
+                    "INSERT INTO epochs (since, reference, top_x, top_y, bottom_x, bottom_y, "
+                    "scale, shift, change, current) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                    (
+                        now.isoformat(),
+                        reference,
+                        *epoch.top,
+                        *epoch.bottom,
+                        epoch.scale,
+                        epoch.shift,
+                        str(epoch.change),
+                    ),
+                )
+                epoch = replace(epoch, id=row.lastrowid)
+                if change is Change.FIRST:
+                    self._db.execute(
+                        "UPDATE readings SET epoch = ? WHERE epoch IS NULL", (epoch.id,)
+                    )
+            self._db.execute("UPDATE epochs SET current = (id = ?)", (epoch.id,))
+        return epoch, change
+
+    def current_epoch(self) -> AxisEpoch | None:
+        row = self._db.execute(f"SELECT {_EPOCH_COLUMNS} FROM epochs WHERE current").fetchone()
+        return None if row is None else _epoch(row)
+
+    def epochs(self) -> dict[int, AxisEpoch]:
+        rows = self._db.execute(f"SELECT {_EPOCH_COLUMNS} FROM epochs")
+        return {row[0]: _epoch(row) for row in rows}
 
     def last_fill(self, before: datetime | None = None) -> Fill | None:
         query = "SELECT ts, before, after FROM fills"
@@ -119,3 +215,10 @@ class History:
 
     def count(self) -> int:
         return int(self._db.execute("SELECT COUNT(*) FROM readings").fetchone()[0])
+
+
+def _epoch(row: tuple[int, str, float, float, float, float, float, float, str]) -> AxisEpoch:
+    id_, reference, top_x, top_y, bottom_x, bottom_y, scale, shift, change = row
+    return AxisEpoch(
+        reference, (top_x, top_y), (bottom_x, bottom_y), scale, shift, Change(change), id_
+    )

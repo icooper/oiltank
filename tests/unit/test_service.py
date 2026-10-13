@@ -14,8 +14,10 @@ import numpy as np
 import pytest
 
 from oiltank.archive import Archive, ArchivePolicy
+from oiltank.calibrate import shifted
 from oiltank.calibration import Calibration, CalibrationPoint
 from oiltank.config import Settings
+from oiltank.epochs import Change
 from oiltank.history import History
 from oiltank.model import Frame, LevelState, Problem
 from oiltank.publish.discovery import Topics
@@ -218,6 +220,56 @@ def test_calibration_edits_are_picked_up(rig: Rig, settings: Settings) -> None:
     second = rig.service.cycle()
     assert first.fraction is not None and second.fraction is not None
     assert second.fraction == pytest.approx(first.fraction * 0.9 / 0.98, abs=0.01)
+
+
+EVER = datetime(2000, 1, 1, tzinfo=UTC)
+
+
+def test_an_axis_edit_keeps_stored_readings_on_the_gauge(
+    rig: Rig, settings: Settings, camera: ScriptedCamera
+) -> None:
+    for _ in range(3):
+        rig.service.cycle()
+    cal = Calibration.load(settings.calibration_path)
+    (x, y), bottom = cal.axis.top, cal.axis.bottom
+    # A longer axis: stored t values (measured along the old one) now mean somewhere else. The
+    # owner's 98% point is an `at` position, so the disc still reads 98% on the new axis.
+    cal.updated(axis=cal.axis.updated(top=(x, y - 30))).save(settings.calibration_path)
+    assert rig.service.cycle().fraction == pytest.approx(0.98, abs=0.01)
+    publisher = RecordingPublisher(Topics.from_settings(settings))
+    restarted = Service(
+        settings, settings.calibration_path, camera, publisher, queue.Queue(), rig.history
+    )
+    restarted._publish()  # replayed entirely from history
+    assert publisher.states[0].fraction == pytest.approx(0.98, abs=0.01)
+    current = rig.history.current_epoch()
+    assert current is not None and current.change is Change.AXIS_EDIT
+    assert current.bottom == bottom
+
+
+def test_a_rebase_keeps_stored_readings_on_the_gauge(
+    rig: Rig, settings: Settings, camera: ScriptedCamera, sample_frames: list[Frame]
+) -> None:
+    for _ in range(3):
+        rig.service.cycle()
+    dx, dy = 14, -9  # the camera was bumped
+    bumped = []
+    for f in sample_frames[:4]:
+        gray = synth.shift(f.gray, dx, dy)
+        ok, jpeg = cv2.imencode(".jpg", gray)
+        assert ok
+        bumped.append(Frame(gray=gray, ts=f.ts, source=f.source, data=jpeg.tobytes()))
+    camera.frames = bumped
+    reference = Path("reference-bumped.jpg")
+    assert bumped[0].data is not None
+    (settings.data_dir / reference).write_bytes(bumped[0].data)
+    cal = Calibration.load(settings.calibration_path)
+    shifted(cal, dx, dy, reference).save(settings.calibration_path)
+    assert rig.service.cycle().fraction == pytest.approx(0.98, abs=0.01)
+    current = rig.history.current_epoch()
+    assert current is not None and current.change is Change.REBASE
+    stored = rig.history.observations(EVER)
+    assert [o.t for o in rig.history.observations(EVER, onto=current)] == [o.t for o in stored]
 
 
 def test_an_invalid_calibration_edit_keeps_the_old_one(rig: Rig, settings: Settings) -> None:

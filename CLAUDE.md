@@ -100,6 +100,12 @@ flowchart LR
   median smoothing, confirmed refills, the Theil-Sen usage rate and days left. It's a function of
   the readings alone, so `service.py` rebuilds it on start and after a calibration change by
   replaying `history.py` (SQLite `data/oiltank.db`), with fractions recomputed from the stored `t`.
+- `epochs.py` (pure): a stored `t` is relative to the axis it was measured along. History tags
+  each reading with an epoch (one per axis), and the service registers the current one whenever
+  it loads a calibration. **Read stored `t` with `observations(..., onto=epoch)`**:
+  - an axis edit projects onto the new axis;
+  - a rebase (new reference, axis translated with the camera) leaves `t` alone;
+  - anything else carries `t` unchanged and logs a warning.
 - `archive.py`: one record per reading under `data/archive/<UTC date>/`. A record is the JSON
   (reading, alignment, strip row ↔ t labels), the strip PNG, and sometimes the full frame's
   original bytes. The full-frame schedule is independent of problem frames. Oldest files go first

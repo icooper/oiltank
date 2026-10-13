@@ -22,6 +22,7 @@ from oiltank.annotate import encode_jpeg, render
 from oiltank.archive import Archive
 from oiltank.calibration import Calibration, CalibrationError, ResolutionMismatch
 from oiltank.config import Settings
+from oiltank.epochs import Change
 from oiltank.filter import FilterParams, LevelFilter, Observation
 from oiltank.geometry import Aligner
 from oiltank.history import History
@@ -95,10 +96,27 @@ class Service:
     def _load_calibration(self) -> None:
         calibration = Calibration.load(self._calibration_path)
         aligner = Aligner(calibration.anchor, calibration.anchor_patch)
-        self._reader: GaugeReader = build_reader(ReaderConfig(), calibration)
+        reader = build_reader(ReaderConfig(), calibration)
+        mtime = self._calibration_path.stat().st_mtime_ns
+        epoch, change = self._history.register_epoch(
+            calibration.reference_image.as_posix(), calibration.axis, self._clock()
+        )
+        self._reader: GaugeReader = reader
         self._calibration = calibration
         self._aligner = aligner
-        self._calibration_mtime = self._calibration_path.stat().st_mtime_ns
+        self._calibration_mtime = mtime
+        self._epoch = epoch
+        match change:
+            case Change.AXIS_EDIT:
+                log.info("the gauge axis changed; stored readings are mapped onto the new one")
+            case Change.REBASE:
+                log.info("the calibration was rebased; stored readings keep their gauge positions")
+            case Change.NEW_REFERENCE:
+                log.warning(
+                    "the reference frame changed and the gauge axis didn't just move with the "
+                    "camera, so stored readings can't be mapped onto it; levels from before may "
+                    "be off"
+                )
 
     def _reload_if_changed(self) -> None:
         """Pick up calibration edits (e.g. `calibrate point` run alongside the service)."""
@@ -126,7 +144,7 @@ class Service:
         f = LevelFilter(
             self._params, tank.capacity, tank.reserve, last_fill=self._history.last_fill(since)
         )
-        observations = self._history.observations(since)
+        observations = self._history.observations(since, onto=self._epoch)
         f.replay(o.recalibrated(self._calibration.fraction) for o in observations)
         if observations:
             self._state = f.state(observations[-1].ts)
@@ -167,7 +185,7 @@ class Service:
             obs = Observation(now, None, 0.0, None, problem)
 
         update = self._filter.update(obs)
-        self._history.add(obs, accepted=update.accepted, frames=len(frames))
+        self._history.add(obs, accepted=update.accepted, frames=len(frames), epoch=self._epoch)
         if update.fill is not None:
             self._history.add_fill(update.fill)
             log.info(

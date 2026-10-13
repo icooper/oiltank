@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from oiltank.calibration import Axis
+from oiltank.epochs import Change, successor
 from oiltank.filter import Fill, Observation
 from oiltank.history import History
 from oiltank.model import Problem
@@ -50,3 +52,92 @@ def test_refuses_a_newer_schema(tmp_path: Path) -> None:
     db.close()
     with pytest.raises(RuntimeError, match="newer oiltank"):
         History(path)
+
+
+SAMPLE_AXIS = Axis(top=(2166.0, 1020.0), bottom=(2166.0, 1172.0), half_width=50.0)
+LONGER_AXIS = SAMPLE_AXIS.updated(top=(2166.0, 990.0))
+
+SCHEMA_1 = """
+CREATE TABLE readings (
+    id INTEGER PRIMARY KEY, ts TEXT NOT NULL, fraction REAL, confidence REAL NOT NULL, t REAL,
+    problem TEXT, accepted INTEGER NOT NULL, frames INTEGER NOT NULL
+);
+CREATE INDEX readings_ts ON readings (ts);
+CREATE TABLE fills (ts TEXT PRIMARY KEY, before REAL NOT NULL, after REAL NOT NULL);
+PRAGMA user_version = 1;
+"""
+
+
+def test_upgrades_schema_1_and_the_first_epoch_claims_its_readings(tmp_path: Path) -> None:
+    path = tmp_path / "oiltank.db"
+    db = sqlite3.connect(path)
+    db.executescript(SCHEMA_1)
+    db.execute(
+        "INSERT INTO readings (ts, fraction, confidence, t, problem, accepted, frames) "
+        "VALUES (?, 0.5, 0.9, 0.6, NULL, 1, 5)",
+        (T0.isoformat(),),
+    )
+    db.commit()
+    db.close()
+    with History(path) as h:
+        epoch, change = h.register_epoch("frame0.jpg", SAMPLE_AXIS, T0)
+        assert change is Change.FIRST
+        assert epoch.id is not None
+        later, change = h.register_epoch("frame0.jpg", LONGER_AXIS, T0 + timedelta(days=1))
+        assert change is Change.AXIS_EDIT
+        [obs] = h.observations(T0, onto=later)
+        assert obs.t == pytest.approx(LONGER_AXIS.t_of(SAMPLE_AXIS.point(0.6)))
+    with History(path) as h:  # reopening a schema 2 database changes nothing
+        assert h.count() == 1
+        assert h.current_epoch() == later
+
+
+def test_readings_are_carried_onto_the_current_axis(tmp_path: Path) -> None:
+    with History(tmp_path / "oiltank.db") as h:
+        first, _ = h.register_epoch("frame0.jpg", SAMPLE_AXIS, T0)
+        h.add(Observation(T0, 0.98, 0.9, 0.8, None), accepted=True, frames=5, epoch=first)
+        longer, _ = h.register_epoch("frame0.jpg", LONGER_AXIS, T0 + timedelta(hours=1))
+        h.add(
+            Observation(T0 + timedelta(hours=1), 0.98, 0.9, 0.7, None),
+            accepted=True,
+            frames=5,
+            epoch=longer,
+        )
+        moved = SAMPLE_AXIS.t_of(LONGER_AXIS.point(0.7))
+        assert [o.t for o in h.observations(T0)] == [0.8, 0.7]  # as stored
+        assert [o.t for o in h.observations(T0, onto=first)] == pytest.approx([0.8, moved])
+        assert [o.t for o in h.observations(T0, onto=longer)] == pytest.approx(
+            [LONGER_AXIS.t_of(SAMPLE_AXIS.point(0.8)), 0.7]
+        )
+
+
+def test_an_axis_used_before_gets_its_epoch_back(tmp_path: Path) -> None:
+    with History(tmp_path / "oiltank.db") as h:
+        first, _ = h.register_epoch("frame0.jpg", SAMPLE_AXIS, T0)
+        assert h.register_epoch("frame0.jpg", SAMPLE_AXIS, T0) == (first, None)
+        longer, _ = h.register_epoch("frame0.jpg", LONGER_AXIS, T0)
+        again, change = h.register_epoch("frame0.jpg", SAMPLE_AXIS, T0)
+        assert again == first
+        assert change is Change.AXIS_EDIT
+        assert h.current_epoch() == first
+        assert set(h.epochs()) == {first.id, longer.id}
+
+
+def test_epoch_for_stores_nothing(tmp_path: Path) -> None:
+    with History(tmp_path / "oiltank.db") as h:
+        first, _ = h.register_epoch("frame0.jpg", SAMPLE_AXIS, T0)
+        assert h.epoch_for("frame0.jpg", SAMPLE_AXIS) == (first, None)
+        draft, change = h.epoch_for("frame0.jpg", LONGER_AXIS)
+        assert draft.id is None and change is Change.AXIS_EDIT
+        assert h.current_epoch() == first
+        assert list(h.epochs()) == [first.id]
+
+
+def test_unregistered_epochs_cannot_be_stored(tmp_path: Path) -> None:
+    with History(tmp_path / "oiltank.db") as h, pytest.raises(ValueError, match="register"):
+        h.add(
+            Observation(T0, 0.5, 0.9, 0.5, None),
+            accepted=True,
+            frames=1,
+            epoch=successor(None, "frame0.jpg", SAMPLE_AXIS),
+        )

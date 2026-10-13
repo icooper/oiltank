@@ -133,6 +133,7 @@ class Archive:
                     meta["strip_t_last_row"] = float(strip.t_of_row[-1])
 
         meta["calibration"] = {
+            "reference_image": calibration.reference_image.as_posix(),
             "frame_size": list(calibration.frame_size),
             "axis": calibration.axis.model_dump(mode="json"),
             "disc": calibration.disc.model_dump(mode="json"),

@@ -197,7 +197,17 @@ saw. On startup, and whenever `calibration.yaml` changes, the service rebuilds i
 replaying recent readings with the current calibration. So adding a calibration point with
 `oiltank calibrate point` while the service runs also corrects the usage history.
 
-`oiltank history [--days N]` lists recent readings and refills, and what they add up to.
+The stored positions also survive the other calibration changes:
+- **Axis edits** (`oiltank calibrate axis`): each stored position remembers the axis it was
+  measured along and is mapped onto the new one.
+- **Rebases** (`oiltank calibrate rebase`): stored positions are kept as they are, because the
+  disc is still at the same place on the gauge.
+- **Anything else,** such as a new reference frame whose axis doesn't simply follow the camera
+  (`calibrate init --force`): positions can't be mapped. The service logs a warning and keeps
+  them as they are.
+
+`oiltank history [--days N]` lists recent readings and refills, and what they add up to, worked
+out with the current calibration.
 
 `oiltank healthcheck` (the container's healthcheck) checks that the service's loop has written its
 heartbeat file in the last two minutes. The service stops cleanly on SIGTERM (`docker compose

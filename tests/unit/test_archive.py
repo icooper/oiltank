@@ -37,6 +37,7 @@ def test_record_contents(
     assert meta["problem"] is None
     assert len(meta["frames"]) == 3
     assert meta["calibration"]["frame_size"] == [3840, 2160]
+    assert meta["calibration"]["reference_image"] == "frame0.jpg"
 
     strip = cv2.imread(str(path.with_name(meta["strip"])), cv2.IMREAD_GRAYSCALE)
     assert strip is not None

@@ -55,6 +55,7 @@ The code is in `src/oiltank/`:
 | `geometry.py`, `readers/`, `pipeline.py` | Align, rectify and read a burst; pure |
 | `calibration.py`, `calibrate.py` | The calibration model, and the tools behind `oiltank calibrate` |
 | `filter.py`, `history.py`, `archive.py` | Filtering and derived values (pure), SQLite history, the frame archive |
+| `epochs.py` | Which axis a stored gauge position was measured along, and mapping it onto the current one (pure) |
 | `publish/` | Home Assistant discovery and state (pure), and the MQTT connection |
 | `service.py` | The service loop |
 | `annotate.py` | The gauge, diagnostic and grid images |
@@ -85,6 +86,8 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
   `tests/data/discovery.json`, and the state payload;
 - `tests/unit/test_filter.py`, `test_history.py` and `test_service.py`: the level filter (smoothing,
   refills, usage, problems), the SQLite history, and the service loop with a scripted camera;
+- `tests/unit/test_epochs.py`: mapping stored gauge positions across axis edits and rebases (the
+  service tests check that the level survives both);
 - `tests/unit/test_archive.py`: archive records and their labels, the full-frame schedule, and the
   size limit; `test_cli_camera.py` also covers `capture`;
 - `tests/integration/test_mqtt.py` and `test_service.py` (`-m integration`, need Docker): a real
