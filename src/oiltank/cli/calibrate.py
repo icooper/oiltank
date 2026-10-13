@@ -16,6 +16,7 @@ from oiltank.annotate import render_diagnostic, render_grid
 from oiltank.calibrate import (
     DiscScan,
     check_anchor,
+    dated_note,
     default_anchor,
     default_disc,
     default_half_width,
@@ -272,8 +273,7 @@ def _finish(
 
 
 def _note(text: str) -> str:
-    today = date.today().isoformat()
-    return f"{today}: {text}" if text else today
+    return dated_note(text, date.today())
 
 
 # ---- commands ----------------------------------------------------------------------------------

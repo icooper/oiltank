@@ -16,11 +16,12 @@ from fastapi.testclient import TestClient
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
+from oiltank.calibration import Calibration
 from oiltank.config import Settings, WebSettings
 from oiltank.events import EventKind
 from oiltank.model import LevelState
 from oiltank.web.app import STATIC, create_app
-from oiltank.web.control import Current, FileControl, ServiceControl
+from oiltank.web.control import CalibrationFile, Current, FileControl, ServiceControl
 from oiltank.web.schemas import ServiceInfo
 from oiltank.web.security import Policy, host_allowed, refusal
 from oiltank.web.server import WebError, WebServer
@@ -40,6 +41,12 @@ class FakeControl:
 
     def current(self) -> Current | None:
         return self.now
+
+    def calibration_file(self) -> CalibrationFile:
+        return CalibrationFile(Path("missing.yaml"))
+
+    def save_calibration(self, calibration: Calibration, *, if_match: str, read_now: bool) -> str:
+        raise AssertionError("not expected")
 
     def service_info(self) -> ServiceInfo:
         return ServiceInfo(here=self.here, alive=True, reading=False, mqtt_connected=True)

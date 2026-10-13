@@ -2,7 +2,7 @@
 // Pure: parsing and formatting only.
 
 export const RANGES = { "1d": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400, "1y": 365 * 86400 };
-export const VIEWS = ["now", "history"];
+export const VIEWS = ["now", "history", "calibration"];
 
 const iso = (t) => new Date(Math.round(t) * 1000).toISOString().replace(".000Z", "Z");
 

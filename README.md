@@ -290,6 +290,17 @@ The service can also serve a web page. It has two views:
 
   Levels are always worked out with the current calibration, so after you recalibrate, the
   whole history shows the new levels.
+- **Calibration:** the calibration points (see [Points](#points-the-scale)). Change or remove
+  them here, or add them two ways:
+  - **From a reading:** stop on a reading in History where you know what the gauge showed, say
+    from a dipstick or a look at the gauge, and use **This reading was … %**.
+  - **From a delivery:** pick a refill and enter the amount on its ticket. The level before the
+    refill plus the delivered amount is what the gauge should have read after it.
+
+  Changes stay a draft, with a preview of the last 30 days, until you **Save**. The service then
+  uses them at once: it replays the history with them, updates Home Assistant and, if you tick
+  the box, takes a reading. If the calibration file changed in the meantime, for example through
+  `oiltank calibrate`, the save is refused rather than overwriting it.
 
 It's off until you give it a port in `.env`:
 
@@ -560,7 +571,8 @@ gauge reading (`fraction`: 0 = E, 1 = F). Defaults fill in until there are two p
 
 Between points the mapping is linear, and past the outermost points the end segments are
 extended. Points must increase in both position and reading. `calibrate point` replaces a point
-with the same reading, and `calibrate point --fraction F --remove` deletes one.
+with the same reading, and `calibrate point --fraction F --remove` deletes one. The
+[web UI](#web-ui)'s Calibration view does the same.
 
 The sample calibration shows why the defaults are only a starting point. The frames were taken a
 week after a fill, with the tank at about 98%, yet the disc sat well below the top of the dome.

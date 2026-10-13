@@ -47,6 +47,7 @@ export function render(status, now = new Date()) {
 
   const button = $("read-now");
   button.hidden = !status.service.here;
+  $("read-after").closest("label").hidden = !status.service.here; // only a service can read
   button.disabled = Boolean(status.service.reading);
   const schedule = [];
   if (status.service.here && status.service.next_reading && !status.service.reading) {

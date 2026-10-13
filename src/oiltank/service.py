@@ -147,6 +147,10 @@ class Service:
         self._filter = self._replay()
         self._refresh()
 
+    @property
+    def calibration_path(self) -> Path:
+        return self._calibration_path
+
     # ---- calibration and history ---------------------------------------------------------------
 
     def _load_calibration(self) -> None:

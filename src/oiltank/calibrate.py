@@ -6,6 +6,7 @@ result.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import cv2
@@ -348,6 +349,12 @@ def shifted(calibration: Calibration, dx: float, dy: float, reference: Path) -> 
 
 
 # ---- points ------------------------------------------------------------------------------------
+
+
+def dated_note(text: str, today: date) -> str:
+    """A point's note, starting with the day it was recorded."""
+    day = today.isoformat()
+    return f"{day}: {text}" if text else day
 
 
 def with_point(

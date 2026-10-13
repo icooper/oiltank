@@ -158,6 +158,14 @@ flowchart LR
     - Archive records are joined to history rows by timestamp, which gives a record its epoch.
     - Gauge-over-time tiles are one PNG per UTC day, cached in memory under a version naming
       their inputs. The client fetches them with `?v=<version>`, which makes them immutable.
+  - **Calibration editing** (`calibration_api.py`):
+    - The browser keeps a draft of the points (`draft.js`). The server turns readings and
+      deliveries into points with `calibrate.with_point`, previews the draft, and saves it.
+    - **The calibration file is what's edited.** `CalibrationFile` loads it with its tag, and a
+      save needs `If-Match`: a stale one gets 412 rather than overwriting an `oiltank calibrate`
+      edit.
+    - In `oiltank run`, saves go through `Service.call` → `apply_calibration`, so the service
+      switches at once.
     - The Node version is `.nvmrc`'s (`nvm use` locally; `setup-node` with `node-version-file`
       in workflows). Node is the one tool not run through uv.
 

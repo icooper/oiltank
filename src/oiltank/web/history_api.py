@@ -9,7 +9,7 @@ their timestamp, which is how a record's strip finds its epoch.
 import math
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 
 from oiltank.archive import DAY_RE, ArchiveReader, ArchiveRecord
+from oiltank.calibration import Calibration
 from oiltank.config import Settings
 from oiltank.epochs import carry
 from oiltank.filter import FilterParams
@@ -144,6 +145,61 @@ def record_detail(
     }
 
 
+@contextmanager
+def read_history(path: Path) -> Iterator[History | None]:
+    """The history, read-only; None if there isn't one yet."""
+    try:
+        h = History.open_readonly(path)
+    except FileNotFoundError:
+        yield None
+        return
+    except (OSError, RuntimeError, sqlite3.Error) as e:
+        raise HTTPException(503, f"can't read the history: {e}") from e
+    try:
+        yield h
+    finally:
+        h.close()
+
+
+def time_range(start: datetime | None, end: datetime | None) -> tuple[datetime, datetime]:
+    """``start`` and ``end`` (default: the last week), checked."""
+    end = _utc(end) if end is not None else datetime.now(UTC)
+    start = _utc(start) if start is not None else end - DEFAULT_RANGE
+    if not start < end:
+        raise HTTPException(422, "start must be before end")
+    if end - start > MAX_RANGE:
+        raise HTTPException(422, f"at most {MAX_RANGE.days} days at a time")
+    return start, end
+
+
+def series_payload(
+    settings: Settings,
+    history_path: Path,
+    current: Current,
+    calibration: Calibration,
+    start: datetime | None,
+    end: datetime | None,
+) -> dict[str, Any]:
+    """Readings from ``start`` until before ``end``, with levels worked out by ``calibration``
+    (the current one, or a draft) from ``t`` carried onto the current axis."""
+    start, end = time_range(start, end)
+    params = FilterParams.from_settings(settings.service)
+    tank = settings.tank
+    warm_up = start - timedelta(days=params.usage_window_days + 1)
+    with read_history(history_path) as h:
+        rows = [] if h is None else h.readings(warm_up, end, onto=current.epoch)
+        last_fill = None if h is None else h.last_fill(warm_up)
+    series = build_series(rows, start, calibration, params, tank.capacity, tank.reserve, last_fill)
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "unit": tank.unit,
+        "capacity": tank.capacity,
+        "scale": scale(calibration),
+        **series,
+    }
+
+
 def history_router(
     settings: Settings, control: Control, archive: ArchiveReader, history_path: Path
 ) -> APIRouter:
@@ -156,20 +212,8 @@ def history_router(
             raise HTTPException(409, "there's no usable calibration to work out levels with")
         return cur
 
-    @contextmanager
-    def history() -> Iterator[History | None]:
-        """The history, read-only; None if there isn't one yet."""
-        try:
-            h = History.open_readonly(history_path)
-        except FileNotFoundError:
-            yield None
-            return
-        except (OSError, RuntimeError, sqlite3.Error) as e:
-            raise HTTPException(503, f"can't read the history: {e}") from e
-        try:
-            yield h
-        finally:
-            h.close()
+    def history() -> AbstractContextManager[History | None]:
+        return read_history(history_path)
 
     def day_range(day: str) -> tuple[datetime, datetime]:
         if not DAY_RE.fullmatch(day):
@@ -207,33 +251,9 @@ def history_router(
         request: Request, start: datetime | None = None, end: datetime | None = None
     ) -> Response:
         """Readings from ``start`` until before ``end`` (default: the last week)."""
-        end = _utc(end) if end is not None else datetime.now(UTC)
-        start = _utc(start) if start is not None else end - DEFAULT_RANGE
-        if not start < end:
-            raise HTTPException(422, "start must be before end")
-        if end - start > MAX_RANGE:
-            raise HTTPException(422, f"at most {MAX_RANGE.days} days at a time")
         cur = current()
-        params = FilterParams.from_settings(settings.service)
-        tank = settings.tank
-        warm_up = start - timedelta(days=params.usage_window_days + 1)
-        with history() as h:
-            rows = [] if h is None else h.readings(warm_up, end, onto=cur.epoch)
-            last_fill = None if h is None else h.last_fill(warm_up)
-        series = build_series(
-            rows, start, cur.calibration, params, tank.capacity, tank.reserve, last_fill
-        )
-        return json_response(
-            request,
-            {
-                "start": start.isoformat(),
-                "end": end.isoformat(),
-                "unit": tank.unit,
-                "capacity": tank.capacity,
-                "scale": scale(cur.calibration),
-                **series,
-            },
-        )
+        payload = series_payload(settings, history_path, cur, cur.calibration, start, end)
+        return json_response(request, payload)
 
     @router.get("/api/archive/days/{day}")
     def archive_day(request: Request, day: str) -> Response:

@@ -2,6 +2,8 @@
 // `?embed=card` shows a compact History view for a Home Assistant card; `?theme=` forces a theme.
 
 import { getJSON, postJSON } from "./api.js";
+import { CalibrationView, wireDraftBar } from "./calibration.js";
+import { draft } from "./draft.js";
 import { HistoryView } from "./history.js";
 import { render } from "./status.js";
 import { formatHash, parseHash, parseOptions } from "./store.js";
@@ -22,13 +24,21 @@ window.addEventListener("unhandledrejection", (e) => showError(e.reason?.message
 // ---- views --------------------------------------------------------------------------------------
 
 let historyView = null;
+let calibrationView = null;
 
 function show() {
   const state = parseHash(window.location.hash);
   const view = options.card ? "history" : state.view;
-  for (const name of ["now", "history"]) document.getElementById(`view-${name}`).hidden = name !== view;
+  for (const name of ["now", "history", "calibration"]) {
+    document.getElementById(`view-${name}`).hidden = name !== view;
+  }
   for (const tab of document.querySelectorAll(".tabs a")) {
     tab.setAttribute("aria-current", tab.dataset.view === view ? "page" : "false");
+  }
+  if (view === "calibration") {
+    calibrationView ??= new CalibrationView(document.getElementById("view-calibration"));
+    calibrationView.open();
+    return;
   }
   if (view !== "history") return;
   if (!historyView) {
@@ -44,6 +54,14 @@ function show() {
 }
 
 window.addEventListener("hashchange", show);
+
+// The calibration draft: loaded for the "This reading was" form and the unsaved-changes bar.
+wireDraftBar(() => {
+  if (historyView) historyView.reset();
+  etag = null;
+  refresh();
+});
+draft.load().catch(() => {}); // no usable calibration: nothing to change
 
 // ---- status -------------------------------------------------------------------------------------
 

@@ -16,6 +16,7 @@ from starlette.types import Scope
 from oiltank.archive import ArchiveReader
 from oiltank.config import Settings
 from oiltank.publish.discovery import state_payload
+from oiltank.web.calibration_api import calibration_router
 from oiltank.web.control import Control
 from oiltank.web.history_api import history_router
 from oiltank.web.responses import IMMUTABLE, json_response
@@ -86,6 +87,9 @@ def create_app(control: Control, settings: Settings, *, read_only: bool) -> Fast
             )
         return JSONResponse({"detail": "reading"}, 202)
 
+    app.include_router(
+        calibration_router(settings, control, settings.data_dir / "oiltank.db", read_only=read_only)
+    )
     app.include_router(
         history_router(
             settings,

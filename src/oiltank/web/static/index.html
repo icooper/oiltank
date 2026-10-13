@@ -4,17 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Oil tank</title>
+<title>Oil Tank</title>
 <link rel="icon" href="{{static}}/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="{{static}}/app.css">
 <script type="module" src="{{static}}/js/main.js"></script>
 </head>
 <body>
 <header class="bar">
-  <h1>Oil tank</h1>
+  <h1>Oil Tank</h1>
   <nav class="tabs" aria-label="Views">
     <a href="#view=now" data-view="now">Now</a>
     <a href="#view=history" data-view="history">History</a>
+    <a href="#view=calibration" data-view="calibration">Calibration</a>
   </nav>
   <span id="service" class="chip" role="status">Connecting…</span>
 </header>
@@ -101,8 +102,65 @@
       <canvas id="frame"></canvas>
       <figcaption id="frame-caption" class="muted"></figcaption>
     </figure>
-    <dl id="reading-facts" class="facts"></dl>
+    <div class="reading-side">
+      <dl id="reading-facts" class="facts"></dl>
+      <form id="point-form" class="point-form" hidden>
+        <label>This reading was
+          <input id="point-level" type="number" min="0" max="100" step="0.1" required> %</label>
+        <input id="point-note" type="text" placeholder="How you know (optional)" aria-label="Note">
+        <button type="submit" class="quiet">Add as a calibration point</button>
+        <p id="point-message" class="muted" role="status"></p>
+      </form>
+    </div>
   </section>
 </main>
+
+<main id="view-calibration" class="view" hidden>
+  <section class="card" aria-labelledby="points-heading">
+    <h2 id="points-heading">Calibration points</h2>
+    <p class="muted">Each point says what the gauge reads with the disc at one position; the scale
+      runs straight between them. With fewer than two, the bottom of travel stands in for E (or the
+      top for F).</p>
+    <p id="cal-read-only" class="muted" hidden>This web UI is read-only (OILTANK_WEB_READ_ONLY).</p>
+    <ul id="cal-warnings" class="warnings" hidden></ul>
+    <table class="points">
+      <thead><tr><th scope="col">Reading</th><th scope="col">Position</th><th scope="col">Note</th><th scope="col"><span class="visually-hidden">Remove</span></th></tr></thead>
+      <tbody id="points-body"></tbody>
+    </table>
+    <p id="points-empty" class="muted" hidden>No points yet.</p>
+    <p id="points-message" class="muted" role="status"></p>
+    <p class="muted">To add a point from a reading you trust, find it under
+      <a href="#view=history">History</a> and use “This reading was” beside it.</p>
+  </section>
+  <section id="delivery-card" class="card" aria-labelledby="delivery-heading">
+    <h2 id="delivery-heading">From a delivery</h2>
+    <p class="muted">The level before a refill plus the amount on the delivery ticket is what the
+      gauge should have read afterwards.</p>
+    <p id="no-fills" class="muted" hidden>No refills in the history yet.</p>
+    <form id="delivery-form" class="row-form">
+      <label>Refill <select id="fill-select"></select></label>
+      <label>Delivered <span class="with-unit"><input id="delivered" type="number" min="0"
+        step="0.1" required> <span id="delivered-unit">gal</span></span></label>
+      <label>Note <input id="delivery-note" type="text" placeholder="e.g. ticket 4411"></label>
+      <button type="submit" class="quiet">Add a point</button>
+    </form>
+    <p id="delivery-message" class="muted" role="status"></p>
+  </section>
+  <section class="card" aria-labelledby="preview-heading">
+    <h2 id="preview-heading">The last 30 days</h2>
+    <p class="muted">With your changes; the dashed grey line is the level as it is now.</p>
+    <div id="preview-plot" class="plots"><canvas id="preview-chart"></canvas></div>
+    <p id="preview-message" class="muted status" role="status"></p>
+  </section>
+</main>
+
+<div id="draft-bar" class="draft-bar" role="region" aria-label="Unsaved calibration changes" hidden>
+  <span>You have unsaved changes to the calibration.</span>
+  <label class="check"><input type="checkbox" id="read-after" checked> Take a reading after saving</label>
+  <button type="button" id="draft-save">Save</button>
+  <button type="button" class="quiet" id="draft-discard">Discard</button>
+  <a href="#view=calibration">Review</a>
+  <p id="draft-message" role="status"></p>
+</div>
 </body>
 </html>

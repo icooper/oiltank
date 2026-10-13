@@ -5,7 +5,7 @@ import { getJSON } from "./api.js";
 import { colors, sized } from "./canvas.js";
 import { drawChart, levelY, PLOT } from "./chart.js";
 import { percent } from "./format.js";
-import { Inspector, prefetch } from "./inspector.js";
+import { forget, Inspector, prefetch } from "./inspector.js";
 import { around, nearestIndex, nextEvent, stepBy, stepDays, utcDay, utcDays } from "./series.js";
 import { RANGES } from "./store.js";
 import { drawStrips } from "./strips.js";
@@ -54,6 +54,16 @@ export class HistoryView {
     this.markRange();
     this.layout();
     this.load();
+  }
+
+  /** Fetch everything again: the calibration changed, so every level did. */
+  reset() {
+    this.loaded = null;
+    this.etag = null;
+    this.days.clear();
+    this.inspector.showing = null;
+    forget();
+    if (this.scale) this.load();
   }
 
   // ---- data -----------------------------------------------------------------------------------

@@ -100,7 +100,7 @@ def test_service_serves_the_web_ui(env: dict[str, str], watcher: Watcher) -> Non
         assert status["service"]["here"] is True
         assert httpx.get(f"{base}/api/gauge.jpg").content[:2] == b"\xff\xd8"
         page = httpx.get(f"{base}/")
-        assert page.status_code == 200 and "Oil tank" in page.text
+        assert page.status_code == 200 and "Oil Tank" in page.text
 
         first = status["state"]["ts"]
         cross = httpx.post(f"{base}/api/read-now", json={}, headers={"Origin": "https://x.io"})

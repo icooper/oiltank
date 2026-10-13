@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from oiltank.events import Event
+from oiltank.events import Event, EventKind
 from oiltank.history import History
 from oiltank.model import Frame, LevelState
 from oiltank.publish.discovery import Topics
@@ -141,3 +141,18 @@ class Rig:
     publisher: RecordingPublisher
     events: queue.Queue[Event]
     history: History
+
+
+@contextmanager
+def running(rig: Rig) -> Iterator[threading.Thread]:
+    """The service loop, on its own thread."""
+    stop = threading.Event()
+    thread = threading.Thread(target=rig.service.run, args=(stop,), daemon=True)
+    thread.start()
+    try:
+        yield thread
+    finally:
+        stop.set()
+        rig.events.put(Event(EventKind.STOP))
+        thread.join(timeout=10)
+    assert not thread.is_alive()

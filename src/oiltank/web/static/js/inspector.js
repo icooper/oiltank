@@ -3,6 +3,7 @@
 
 import { getJSON } from "./api.js";
 import { colors, image, peek, sized } from "./canvas.js";
+import { draft } from "./draft.js";
 import { discAngle, fit, mergeLabels } from "./geometry.js";
 import { NONE, percent, reason } from "./format.js";
 
@@ -34,6 +35,12 @@ export async function detail(day, key) {
   }
 }
 
+/** Forget what's been fetched (after the calibration changes, a record's level and marks do). */
+export function forget() {
+  details.clear();
+  scores.clear();
+}
+
 /** Fetch a record's details and strip ahead of time, for smooth stepping. */
 export function prefetch(day, key) {
   image(`archive/${day}/${key}-strip.png`);
@@ -52,8 +59,32 @@ export class Inspector {
     this.frame = root.querySelector("#frame");
     this.frameCaption = root.querySelector("#frame-caption");
     this.facts = root.querySelector("#reading-facts");
+    this.form = root.querySelector("#point-form");
+    this.formMessage = root.querySelector("#point-message");
     this.showing = null;
     this.restTimer = null;
+    this.reading = null;
+    this.form.addEventListener("submit", (e) => this.addPoint(e));
+    draft.addEventListener("change", () => this.showForm());
+  }
+
+  /** "This reading was …": offered for a reading that found the disc, if changes are allowed. */
+  showForm() {
+    const r = this.reading;
+    this.form.hidden = !(r && r.t != null && r.level != null && draft.calibration && !draft.readOnly);
+  }
+
+  async addPoint(event) {
+    event.preventDefault();
+    const level = Number(this.form.querySelector("#point-level").value);
+    const note = this.form.querySelector("#point-note").value;
+    try {
+      const result = await draft.fromReading(this.reading.ts, level / 100, note);
+      const replaced = result.replaced.length ? ` (it replaces the ${percent(result.replaced[0].fraction * 100)} point)` : "";
+      this.formMessage.textContent = `Added ${percent(level)} to your changes${replaced}. Check them under Calibration, then save.`;
+    } catch (error) {
+      this.formMessage.textContent = error.message;
+    }
   }
 
   /** Show reading `reading` (`{ ts, level, t, confidence, problem, accepted }`), with its
@@ -62,6 +93,10 @@ export class Inspector {
     const id = record ? `${record.day}/${record.key}` : `ts:${reading.ts}`;
     if (id === this.showing) return;
     this.showing = id;
+    this.reading = reading;
+    this.formMessage.textContent = "";
+    this.form.querySelector("#point-level").value = reading.level == null ? "" : reading.level.toFixed(1);
+    this.showForm();
     this.current = null;
     this.curve = null;
     this.stripUrl = record ? `archive/${record.day}/${record.key}-strip.png` : null;

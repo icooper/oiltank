@@ -58,8 +58,9 @@ reload.
 - **Pure modules:** keep logic that can be tested without a browser in modules that don't touch
   the DOM, and test those in `tests/js/`. These are `format.js`, `timescale.js` (the shared time
   axis and its ticks), `series.js` (stepping and jumping through readings), `store.js` (the URL
-  hash) and `geometry.js`.
-- **Drawing modules** (`chart.js`, `strips.js`, `inspector.js`, `history.js`) aren't run by the
+  hash), `geometry.js` and `draft.js` (the calibration draft).
+- **Drawing and view modules** (`chart.js`, `strips.js`, `inspector.js`, `history.js`,
+  `calibration.js`) aren't run by the
   tests. Check them in a browser. A data directory with some history makes that easier. Any
   error in the page shows in a banner at the top.
 
@@ -117,6 +118,10 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
   API. It runs over a data directory made from the sample frames, with the disc moved down the
   gauge, and covers recalibrated levels, a day's tile (the disc's band moves the right number of
   rows), records for the inspector, re-read scores, and which files are served;
+- `tests/unit/test_web_calibration.py`: changing the calibration from the web UI. It covers
+  points from readings and deliveries (and the ones that can't be), the draft's preview, and
+  saving to the file or through the service. A stale `If-Match` is refused, and so is a save
+  from a read-only UI;
 - `tests/unit/test_js_vectors.py`: values the pages must work out exactly as the server does,
   written to `tests/data/js-vectors.json` (`UPDATE_GOLDEN=1` to rewrite) and checked by
   `tests/js/geometry.test.js`;

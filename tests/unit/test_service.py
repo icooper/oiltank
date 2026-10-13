@@ -4,8 +4,7 @@
 import json
 import queue
 import threading
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -29,7 +28,7 @@ from oiltank.service import (
     ServiceStoppedError,
 )
 from tests.cv import synth
-from tests.fakes import RecordingPublisher, Rig, ScriptedCamera
+from tests.fakes import RecordingPublisher, Rig, ScriptedCamera, running
 
 
 def test_a_cycle_reads_stores_and_publishes(rig: Rig) -> None:
@@ -210,21 +209,6 @@ def test_run_loop(rig: Rig, settings: Settings, camera: ScriptedCamera) -> None:
     assert rig.publisher.calls[0] == "start"
     assert rig.publisher.calls[-1] == "stop"
     assert camera.calls == 2  # the 15-minute interval never came round
-
-
-@contextmanager
-def running(rig: Rig) -> Iterator[threading.Thread]:
-    """The service loop, on its own thread."""
-    stop = threading.Event()
-    thread = threading.Thread(target=rig.service.run, args=(stop,), daemon=True)
-    thread.start()
-    try:
-        yield thread
-    finally:
-        stop.set()
-        rig.events.put(Event(EventKind.STOP))
-        thread.join(timeout=10)
-    assert not thread.is_alive()
 
 
 def test_calls_run_on_the_service_thread_between_readings(rig: Rig, camera: ScriptedCamera) -> None:

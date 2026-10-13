@@ -8,7 +8,9 @@ export const PLOT = { left: 46, right: 10 };
 const TOP = 10;
 const BOTTOM = 24;
 
-export function drawChart(canvas, width, height, scale, series, c) {
+/** `before`, if given, is another series whose filtered level is drawn faintly underneath: the
+ * level as it is, under a preview of a changed calibration. */
+export function drawChart(canvas, width, height, scale, series, c, { before = null } = {}) {
   const ctx = sized(canvas, width, height);
   const top = TOP;
   const bottom = height - BOTTOM;
@@ -63,22 +65,28 @@ export function drawChart(canvas, width, height, scale, series, c) {
     ctx.fillText(label, x + 5 + w > right ? x - 5 - w : x + 5, bottom - 18);
   }
 
-  ctx.strokeStyle = c.accent;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  let pen = false;
-  for (let i = 0; i < r.ts.length; i += 1) {
-    const level = r.smoothed[i];
-    if (level == null) {
-      pen = false;
-      continue;
+  const line = (cols, colour, width, dash) => {
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = width;
+    ctx.setLineDash(dash);
+    ctx.beginPath();
+    let pen = false;
+    for (let i = 0; i < cols.ts.length; i += 1) {
+      const level = cols.smoothed[i];
+      if (level == null) {
+        pen = false;
+        continue;
+      }
+      const x = scale.x(cols.ts[i]);
+      if (pen) ctx.lineTo(x, y(level));
+      else ctx.moveTo(x, y(level));
+      pen = true;
     }
-    const x = scale.x(r.ts[i]);
-    if (pen) ctx.lineTo(x, y(level));
-    else ctx.moveTo(x, y(level));
-    pen = true;
-  }
-  ctx.stroke();
+    ctx.stroke();
+    ctx.setLineDash([]);
+  };
+  if (before) line(before.readings, c.muted, 2, [5, 4]);
+  line(r, c.accent, 2, []);
 
   const dense = r.ts.length > 1 && scale.width / r.ts.length < 3;
   const radius = dense ? 1.5 : 2.5;
