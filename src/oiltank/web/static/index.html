@@ -16,6 +16,7 @@
     <a href="#view=now" data-view="now">Now</a>
     <a href="#view=history" data-view="history">History</a>
     <a href="#view=calibration" data-view="calibration">Calibration</a>
+    <a href="#view=gauge" data-view="gauge">Gauge</a>
   </nav>
   <span id="service" class="chip" role="status">Connecting…</span>
 </header>
@@ -151,6 +152,57 @@
     <p class="muted">With your changes; the dashed grey line is the level as it is now.</p>
     <div id="preview-plot" class="plots"><canvas id="preview-chart"></canvas></div>
     <p id="preview-message" class="muted status" role="status"></p>
+  </section>
+</main>
+
+<main id="view-gauge" class="view" hidden>
+  <section class="card gauge" aria-labelledby="gauge-heading">
+    <h2 id="gauge-heading">Where the gauge is</h2>
+    <p class="muted">The axis the disc travels (top of travel to bottom), the strip around it the
+      reader looks in, the disc's size, and the anchor: a patch of the scene that doesn't change,
+      which tells how far the camera has moved. Each change is checked against the frame shown.</p>
+    <div class="toolbar">
+      <label class="group">Frame <select id="g-frame"></select></label>
+      <button type="button" class="quiet" id="g-grab" hidden>Grab from the camera</button>
+      <button type="button" class="quiet" id="g-fit">Fit to the gauge</button>
+    </div>
+    <div class="gauge-layout">
+      <div id="g-stage" class="stage"><canvas id="g-canvas"
+        aria-label="The frame, with the gauge's axis, strip, marks and anchor. Drag the handles to change them."></canvas></div>
+      <div class="gauge-side">
+        <div id="g-result" class="g-result" role="status" aria-live="polite"></div>
+        <details open>
+          <summary>Numbers</summary>
+          <form id="g-form" class="g-form">
+            <fieldset><legend>Axis top (x, y)</legend><input id="g-top-x" type="number" step="0.5"><input id="g-top-y" type="number" step="0.5"></fieldset>
+            <fieldset><legend>Axis bottom (x, y)</legend><input id="g-bottom-x" type="number" step="0.5"><input id="g-bottom-y" type="number" step="0.5"></fieldset>
+            <fieldset><legend>Strip half-width, margin</legend><input id="g-half" type="number" step="1" min="1"><input id="g-margin" type="number" step="0.05" min="0" max="1"></fieldset>
+            <fieldset><legend>Disc (width, height)</legend><input id="g-disc-w" type="number" step="1" min="1"><input id="g-disc-h" type="number" step="1" min="1"></fieldset>
+            <fieldset><legend>Anchor (x, y, width, height)</legend><input id="g-anchor-x" type="number" step="1"><input id="g-anchor-y" type="number" step="1"><input id="g-anchor-w" type="number" step="1" min="16"><input id="g-anchor-h" type="number" step="1" min="16"></fieldset>
+            <fieldset><legend>Anchor search (px), least match</legend><input id="g-search" type="number" step="1" min="1"><input id="g-min-score" type="number" step="0.05" min="0" max="1"></fieldset>
+          </form>
+        </details>
+        <details>
+          <summary>Disc size</summary>
+          <p class="muted">A disc size that's a little off can lock onto a highlight instead of the
+            disc. The scan reads the frame with sizes around yours and shows which agree.</p>
+          <button type="button" class="quiet" id="g-scan">Scan disc sizes</button>
+          <canvas id="g-heatmap"></canvas>
+          <p id="g-scan-text" class="muted" role="status"></p>
+        </details>
+        <section id="g-rebase" class="g-rebase" hidden>
+          <h3>Has the camera moved?</h3>
+          <p class="muted">If this frame is from after the camera was bumped, it can become the
+            reference: the gauge's geometry moves with the camera.</p>
+          <button type="button" class="quiet" id="g-rebase-find">Find the camera's shift</button>
+          <p id="g-rebase-text" role="status"></p>
+          <button type="button" id="g-rebase-save" hidden>Make this frame the reference</button>
+        </section>
+      </div>
+    </div>
+    <p class="hint muted">Drag the round handles to move the axis ends or widen the strip, and the
+      pink ones to move or resize the anchor. Scroll or pinch to zoom, drag elsewhere to pan,
+      double-click to fit.</p>
   </section>
 </main>
 

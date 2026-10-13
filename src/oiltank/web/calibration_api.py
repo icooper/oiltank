@@ -145,8 +145,9 @@ def calibration_router(workspace: Workspace, frames: FrameStore, *, read_only: b
     def drafted(points: list[dict[str, Any]]) -> Calibration:
         return workspace.drafted(Draft(points=points))
 
-    def added(points: list[dict[str, Any]], point: CalibrationPoint) -> dict[str, Any]:
-        draft = drafted(points)
+    def added(body: Draft, point: CalibrationPoint) -> dict[str, Any]:
+        """``point`` added to the draft (its geometry included)."""
+        draft = workspace.drafted(body)
         try:
             updated, replaced = with_point(draft, point)
         except ValidationError as e:
@@ -220,7 +221,7 @@ def calibration_router(workspace: Workspace, frames: FrameStore, *, read_only: b
         when = row.ts.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
         note = dated_note(body.note or f"the reading at {when}", date.today())
         point = CalibrationPoint(at=(round(x, 1), round(y, 1)), fraction=body.fraction, note=note)
-        return added(body.points, point)
+        return added(body, point)
 
     @router.post("/api/calibration/points/from-fill")
     def from_fill(body: FromFill) -> dict[str, Any]:
@@ -268,7 +269,7 @@ def calibration_router(workspace: Workspace, frames: FrameStore, *, read_only: b
         )
         point = CalibrationPoint(at=(round(x, 1), round(y, 1)), fraction=round(after, 4), note=note)
         return {
-            **added(body.points, point),
+            **added(body, point),
             "before": round(100 * before, 2),
             "after": round(100 * after, 2),
         }

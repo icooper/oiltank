@@ -128,6 +128,14 @@ def test_static_files_only_use_relative_urls() -> None:
             assert not re.search(r"url\(\s*['\"]?/", text), f
 
 
+def test_no_inline_script() -> None:
+    """The Content-Security-Policy allows scripts from files only: inline handlers would be
+    blocked."""
+    html = (STATIC / "index.html").read_text()
+    assert not re.search(r"\son[a-z]+=", html)
+    assert "<script>" not in html and "javascript:" not in html
+
+
 def test_every_module_import_exists() -> None:
     for f in (STATIC / "js").rglob("*.js"):
         for target in re.findall(r"""from\s+["'](\.[^"']+)["']""", f.read_text()):

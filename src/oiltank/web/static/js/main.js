@@ -4,6 +4,7 @@
 import { getJSON, postJSON } from "./api.js";
 import { CalibrationView, wireDraftBar } from "./calibration.js";
 import { draft } from "./draft.js";
+import { GaugeView } from "./gauge.js";
 import { HistoryView } from "./history.js";
 import { render } from "./status.js";
 import { formatHash, parseHash, parseOptions } from "./store.js";
@@ -25,11 +26,12 @@ window.addEventListener("unhandledrejection", (e) => showError(e.reason?.message
 
 let historyView = null;
 let calibrationView = null;
+let gaugeView = null;
 
 function show() {
   const state = parseHash(window.location.hash);
   const view = options.card ? "history" : state.view;
-  for (const name of ["now", "history", "calibration"]) {
+  for (const name of ["now", "history", "calibration", "gauge"]) {
     document.getElementById(`view-${name}`).hidden = name !== view;
   }
   for (const tab of document.querySelectorAll(".tabs a")) {
@@ -38,6 +40,11 @@ function show() {
   if (view === "calibration") {
     calibrationView ??= new CalibrationView(document.getElementById("view-calibration"));
     calibrationView.open();
+    return;
+  }
+  if (view === "gauge") {
+    gaugeView ??= new GaugeView(document.getElementById("view-gauge"));
+    gaugeView.open();
     return;
   }
   if (view !== "history") return;
@@ -58,7 +65,9 @@ function show() {
 window.addEventListener("hashchange", show);
 
 // The calibration draft: loaded for the "This reading was" form and the unsaved-changes bar.
-wireDraftBar(() => {
+// Once a change is saved (from the bar, or a rebase), every level may have changed.
+wireDraftBar();
+draft.addEventListener("saved", () => {
   if (historyView) historyView.reset();
   etag = null;
   refresh();

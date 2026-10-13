@@ -354,3 +354,42 @@ input:focus-visible, select:focus-visible { outline: 3px solid var(--accent); ou
 .check { display: flex; gap: 6px; align-items: center; font-size: 0.9rem; }
 
 body.embedded .point-form, body.embedded .draft-bar { display: none; }
+
+/* ---- the gauge's geometry ------------------------------------------------------------------- */
+
+.gauge-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+.stage {
+  position: relative;
+  height: 560px;
+  min-width: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  touch-action: none;
+}
+.stage canvas { display: block; max-width: 100%; }
+.gauge-side { display: grid; gap: 12px; min-width: 0; }
+.gauge-side details { border-top: 1px solid var(--border); padding-top: 8px; }
+.gauge-side summary { cursor: pointer; font-weight: 600; }
+.g-result p { margin: 0 0 6px; font-size: 0.9rem; }
+.g-result p[data-tone="ok"] { color: var(--ok); }
+.g-result p[data-tone="warn"] { color: var(--warn); }
+.g-result p[data-tone="bad"] { color: var(--bad); }
+.g-form { display: grid; gap: 8px; margin-top: 8px; }
+.g-form fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.g-form legend { font-size: 0.8rem; color: var(--muted); margin-bottom: 2px; }
+.g-form input { width: 5.6em; }
+#g-heatmap { display: block; margin: 8px 0; cursor: pointer; }
+.g-rebase { border-top: 1px solid var(--border); padding-top: 8px; }
+.g-rebase h3 { font-size: 0.95rem; margin: 0 0 6px; }
+.g-rebase p { margin: 6px 0; font-size: 0.9rem; }
+.gauge > p { margin: 0 0 10px; }
+
+@media (max-width: 860px) {
+  .gauge-layout { grid-template-columns: minmax(0, 1fr); }
+  .stage { height: 420px; }
+}

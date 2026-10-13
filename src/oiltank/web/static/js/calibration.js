@@ -140,7 +140,7 @@ export class CalibrationView {
 }
 
 /** The bar that says there are unsaved changes, on every view, with Save and Discard. */
-export function wireDraftBar(onSaved) {
+export function wireDraftBar() {
   const bar = document.getElementById("draft-bar");
   const message = document.getElementById("draft-message");
   const update = () => {
@@ -154,7 +154,6 @@ export function wireDraftBar(onSaved) {
     try {
       await draft.save(document.getElementById("read-after").checked);
       message.textContent = "";
-      onSaved();
     } catch (error) {
       message.textContent = error.status === 412 ? `${error.message}.` : `Not saved: ${error.message}`;
     }

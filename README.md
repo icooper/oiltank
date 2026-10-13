@@ -297,6 +297,17 @@ The service can also serve a web page. It has two views:
   - **From a delivery:** pick a refill and enter the amount on its ticket. The level before the
     refill plus the delivered amount is what the gauge should have read after it.
 
+- **Gauge:** where the gauge is in the frame, the same things `oiltank calibrate` sets up.
+  - On a frame you choose (the reference, a recent full frame, or one grabbed from the camera
+    now), drag the axis ends, the strip's width and the anchor, or type the numbers.
+  - Each change is checked straight away: what the reader makes of that frame, whether the
+    anchor can still find camera shifts, and any warnings.
+  - **Disc size** scans sizes around yours and shows which read the disc in the same place.
+    Click one to use it.
+  - **After the camera has moved,** pick a frame from after the move and use **Find the
+    camera's shift**, then **Make this frame the reference**. This is `oiltank calibrate
+    rebase`. It's saved on its own, so your readings keep their places.
+
   Changes stay a draft, with a preview of the last 30 days, until you **Save**. The service then
   uses them at once: it replays the history with them, updates Home Assistant and, if you tick
   the box, takes a reading. If the calibration file changed in the meantime, for example through
