@@ -301,7 +301,9 @@ The service can also serve a web page. It has two views:
   - On a frame you choose (the reference, a recent full frame, or one grabbed from the camera
     now), drag the axis ends, the strip's width and the anchor, or type the numbers.
   - Each change is checked straight away: what the reader makes of that frame, whether the
-    anchor can still find camera shifts, and any warnings.
+    anchor can still find camera shifts, and any warnings. Beside the frame is the strip the
+    reader gets with your settings, where it put the disc, and its score for every row, as in
+    the History inspector.
   - **Changes are only a try-out until you press Save.** Pick other frames to test them on:
     the saved calibration's reading is shown beside yours, and its geometry is drawn faintly
     under your changes. **Back to saved** undoes them.

@@ -1,6 +1,7 @@
 """Editing the calibration's geometry from the web UI: frames, checking a draft, the disc-size
 scan, grabbing from the camera, and rebasing after the camera moved."""
 
+import base64
 import shutil
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -244,3 +246,29 @@ def test_grabbing_from_the_camera(
     assert body["reading"]["level"] == pytest.approx(98, abs=1)
     rebase = c.post("/api/calibration/rebase", json={"frame": grabbed[1]["frame"]}).json()
     assert (rebase["shift"]["dx"], rebase["shift"]["dy"]) == pytest.approx((0, 0), abs=0.5)
+
+
+def test_the_check_shows_the_strip_the_reader_gets(client: TestClient) -> None:
+    body = client.post("/api/calibration/check", json=draft_of(saved(client))).json()
+    strip = body["strip"]
+    assert strip["png"].startswith("data:image/png;base64,")
+    png = base64.b64decode(strip["png"].split(",", 1)[1])
+    image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_GRAYSCALE)
+    assert image is not None and image.shape == (256, 128)
+    assert strip["rows"] == 256 and strip["t_first"] > strip["t_last"]
+    scores = strip["scores"]
+    assert len(scores) == 256
+    best = max((s, i) for i, s in enumerate(scores) if s is not None)[1]
+    assert best == pytest.approx(strip["disc_row"], abs=1)
+    rows = {tick["label"]: tick["row"] for tick in strip["ticks"]}
+    assert rows["F"] < rows["98%"] < rows["E"]
+    assert rows["98%"] == pytest.approx(strip["disc_row"], abs=2)  # the owner's point is the disc
+
+
+def test_the_strip_follows_the_draft(client: TestClient) -> None:
+    before = client.post("/api/calibration/check", json=draft_of(saved(client))).json()["strip"]
+    draft = draft_of(saved(client))
+    draft["axis"]["top"][1] -= 60  # a longer axis: the disc is further down its strip
+    after = client.post("/api/calibration/check", json=draft).json()["strip"]
+    assert after["t_first"] == before["t_first"]  # rows still run from 1 + margin to -margin
+    assert after["disc_row"] > before["disc_row"] + 10

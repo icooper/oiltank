@@ -4,12 +4,11 @@
 import { getJSON } from "./api.js";
 import { colors, image, peek, sized } from "./canvas.js";
 import { draft } from "./draft.js";
-import { discAngle, fit, mergeLabels } from "./geometry.js";
+import { discAngle, fit } from "./geometry.js";
 import { NONE, percent, reason } from "./format.js";
+import { drawStrip } from "./stripview.js";
 
 const STRIP_SCALE = 1.5;
-const GUTTER = 58;
-const SCORES = 56;
 const FRAME_SIZE = 300;
 
 const details = new Map();
@@ -149,74 +148,7 @@ export class Inspector {
   }
 
   drawStrip(img, d, curve) {
-    const h = Math.round(256 * STRIP_SCALE);
-    const w = Math.round(128 * STRIP_SCALE);
-    const ctx = sized(this.strip, GUTTER + w + 8 + SCORES, h);
-    const c = colors();
-    ctx.fillStyle = c.empty;
-    ctx.fillRect(GUTTER, 0, w, h);
-    if (img) {
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(img, GUTTER, 0, w, h);
-    }
-    if (!d) return;
-    const y = (row) => (row + 0.5) * STRIP_SCALE;
-    ctx.font = "11px system-ui, sans-serif";
-    ctx.textAlign = "right";
-    ctx.textBaseline = "middle";
-    ctx.setLineDash([4, 3]);
-    const marks = d.ticks
-      .filter((tick) => tick.row != null && tick.row >= 0 && tick.row <= d.rows - 1)
-      .map((tick) => ({ y: y(tick.row), label: tick.label }));
-    ctx.strokeStyle = c.mark;
-    for (const m of marks) {
-      ctx.beginPath();
-      ctx.moveTo(GUTTER, m.y);
-      ctx.lineTo(GUTTER + w, m.y);
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-    ctx.fillStyle = c.muted;
-    for (const m of mergeLabels(marks, 12)) ctx.fillText(m.label, GUTTER - 6, m.y);
-    ctx.fillStyle = c.warn;
-    for (const f of d.frames) {
-      if (f.row == null) continue;
-      ctx.beginPath();
-      ctx.arc(GUTTER + w - 6, y(f.row), 3, 0, 2 * Math.PI);
-      ctx.fill();
-    }
-    if (d.disc_row != null) {
-      // Where the reader looked: amber if the reading failed (its best guess, not a reading).
-      ctx.strokeStyle = d.problem || d.level == null ? c.warn : c.accent;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(GUTTER, y(d.disc_row));
-      ctx.lineTo(GUTTER + w, y(d.disc_row));
-      ctx.stroke();
-      ctx.lineWidth = 1;
-    }
-    if (curve && curve.scores) {
-      const values = curve.scores.filter((v) => v != null);
-      if (values.length) {
-        const lo = Math.min(...values);
-        const span = Math.max(1e-6, Math.max(...values) - lo);
-        const x0 = GUTTER + w + 8;
-        ctx.strokeStyle = c.fg;
-        ctx.beginPath();
-        let pen = false;
-        curve.scores.forEach((v, row) => {
-          if (v == null) {
-            pen = false;
-            return;
-          }
-          const x = x0 + ((v - lo) / span) * SCORES;
-          if (pen) ctx.lineTo(x, y(row));
-          else ctx.moveTo(x, y(row));
-          pen = true;
-        });
-        ctx.stroke();
-      }
-    }
+    drawStrip(this.strip, img, d, curve, colors(), STRIP_SCALE);
   }
 
   drawFrame(frame, known) {

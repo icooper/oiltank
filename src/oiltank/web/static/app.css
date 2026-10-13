@@ -419,3 +419,7 @@ body.embedded .point-form, body.embedded .draft-bar { display: none; }
   .tabs a { padding: 4px 8px; }
   .points th:nth-child(2), .points td:nth-child(2) { display: none; } /* the position */
 }
+
+.g-strip { margin: 0; }
+.g-strip canvas { display: block; max-width: 100%; height: auto; }
+.g-strip figcaption { margin-top: 6px; font-size: 0.8rem; }

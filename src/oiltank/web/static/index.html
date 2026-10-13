@@ -175,6 +175,12 @@
         aria-label="The frame, with the gauge's axis, strip, marks and anchor. Drag the handles to change them."></canvas></div>
       <div class="gauge-side">
         <div id="g-result" class="g-result" role="status" aria-live="polite"></div>
+        <figure class="g-strip">
+          <canvas id="g-strip" aria-label="The strip the reader gets from this frame, with its score for every row"></canvas>
+          <figcaption class="muted">The strip the reader gets from this frame with these
+            settings: the gauge's marks (dashed), where it put the disc (blue), and its score
+            for every row (right). It picks the highest.</figcaption>
+        </figure>
         <details open>
           <summary>Numbers</summary>
           <form id="g-form" class="g-form">

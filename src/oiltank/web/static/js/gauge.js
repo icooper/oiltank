@@ -7,9 +7,11 @@ import { colors } from "./canvas.js";
 import { draft, geometryOf } from "./draft.js";
 import { reason } from "./format.js";
 import { drawHeatmap } from "./heatmap.js";
+import { drawStrip } from "./stripview.js";
 import { Viewer } from "./viewer.js";
 
 const CHECK_MS = 250;
+const STRIP_SCALE = 1.25; // fits the side panel
 const REFERENCE = { kind: "reference" };
 
 const replaced = (list, i, value) => list.map((v, j) => (j === i ? value : v));
@@ -245,9 +247,28 @@ export class GaugeView {
       if (generation !== this.generation) return; // a newer check is on its way
       this.viewer.setResult(result.valid ? result : null);
       this.showResult(result, saved);
+      this.showStrip(result.valid ? result : null, generation);
     } catch (error) {
       if (generation === this.generation) this.q("#g-result").replaceChildren(line(error.message, "bad"));
     }
+  }
+
+  /** The strip the reader got with the draft on this frame, and its score per row. */
+  showStrip(result, generation) {
+    const canvas = this.q("#g-strip");
+    const c = colors();
+    const strip = result && result.strip;
+    if (!strip) {
+      drawStrip(canvas, null, null, null, c, STRIP_SCALE);
+      return;
+    }
+    const r = result.reading;
+    const d = { rows: strip.rows, ticks: strip.ticks, frames: [], disc_row: strip.disc_row, problem: r.problem, level: r.level };
+    const img = new Image();
+    img.onload = () => {
+      if (generation === this.generation) drawStrip(canvas, img, d, { scores: strip.scores }, c, STRIP_SCALE);
+    };
+    img.src = strip.png;
   }
 
   /** The saved calibration's check of `frame` (kept: it only changes when the saved one does). */

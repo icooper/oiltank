@@ -4,16 +4,18 @@ anchor's self-test and the calibration's warnings; and the disc-size scan. CV on
 The anchor patch comes from the reference frame in memory, so a draft never needs saving first.
 """
 
+import base64
 import math
 from collections.abc import Sequence
 from typing import Any
 
+import cv2
 import numpy as np
 
 from oiltank.calibrate import check_anchor, scan_disc_sizes, warnings
 from oiltank.calibration import Calibration
 from oiltank.geometry import Aligner
-from oiltank.model import Frame, GrayImage
+from oiltank.model import Frame, FrameResult, GrayImage
 from oiltank.pipeline import measure
 from oiltank.readers import ReaderConfig, build_reader
 
@@ -82,6 +84,41 @@ def evaluate(
             ],
         },
         "marks": marks(calibration),
+        "strip": None if not m.frames else strip_view(m.frames[0], calibration),
+    }
+
+
+def strip_view(result: FrameResult, calibration: Calibration) -> dict[str, Any] | None:
+    """The strip the reader got from a frame (as a PNG data URL), the reader's score for every
+    row, the row it picked, and the rows of the gauge's marks: what the inspector shows."""
+    strip = result.strip
+    if strip is None:
+        return None
+    ok, png = cv2.imencode(".png", strip.pixels)
+    if not ok:
+        return None
+    first, last = float(strip.t_of_row[0]), float(strip.t_of_row[-1])
+
+    def row(t: float) -> float:
+        return round((t - first) / (last - first) * (strip.rows - 1), 2)
+
+    axis = calibration.axis
+    ticks = [
+        {"label": "F", "row": row(calibration.t_for(1.0))},
+        {"label": "E", "row": row(calibration.t_for(0.0))},
+    ]
+    for p in calibration.points:
+        if 0.0 < p.fraction < 1.0:
+            ticks.append({"label": f"{100 * p.fraction:.0f}%", "row": row(p.t_on(axis))})
+    reading = result.reading
+    return {
+        "png": "data:image/png;base64," + base64.b64encode(png.tobytes()).decode(),
+        "rows": strip.rows,
+        "t_first": round(first, 5),
+        "t_last": round(last, 5),
+        "disc_row": None if reading is None else _num(reading.row, 2),
+        "scores": None if reading is None else [_num(float(v), 4) for v in reading.scores],
+        "ticks": ticks,
     }
 
 
