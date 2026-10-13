@@ -15,8 +15,10 @@ A containerized service that fetches 4K JPEG frames of a heating-oil tank's floa
 (`/api/frame.jpeg?src=<stream>`), finds the gauge's indicator disc with classical CV, converts its
 position to a fill level, and publishes it to Home Assistant through MQTT discovery. The camera is
 always in IR mode, so frames are grayscale. The design leaves room to swap in an ONNX model on
-CUDA later through config. The MVP (milestones M0–M7) is complete; README.md is the user-facing
-documentation and has the post-MVP roadmap.
+CUDA later through config. The MVP (milestones M0–M7) is complete. README.md is the user-facing
+documentation (running the published image, calibration, Home Assistant); CONTRIBUTING.md is the
+developer documentation (setup, tests, building, commits, CI and releases) and has the post-MVP
+roadmap.
 
 ## Commands
 
@@ -38,6 +40,10 @@ uv run oiltank history / healthcheck / capture --every 10s --duration 1m
 uv add <pkg> / uv add --dev <pkg>        # dependencies; commit uv.lock alongside pyproject.toml
 docker build -t oiltank:dev .            # distroless runtime image (docker-compose.yml for deploys)
 docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev read -c /samples/calibration.yaml --image /samples/frame0.jpg
+# next release version; PSR only releases from main, so run it on an up-to-date main
+uvx --exclude-newer 2026-09-29 --from python-semantic-release==10.7.0 semantic-release --noop version --print
+docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12   # lint the workflows
+GH_TOKEN=$(gh auth token) uvx zizmor==1.30.1 --persona=auditor .github  # audit the workflows
 ```
 
 Python is **3.14** (`.python-version`, `requires-python`). Don't lower it to work around a missing
@@ -108,9 +114,44 @@ flowchart LR
   queue that the main loop handles (`service.py`, or `cli/mqtt.py` for publishing by hand).
 - `model.py`: the typed, frozen dataclasses passed between stages.
 
+## CI and releases
+
+GitHub Actions, in `.github/workflows/`; CONTRIBUTING.md has the diagram.
+
+- PRs run four separate workflows in parallel: `lint.yml`, `test.yml` (unit and integration jobs),
+  `image.yml` and `pr-title.yml`. `image.yml` calls `build-image.yml`, which builds on native
+  `ubuntu-24.04` and `ubuntu-24.04-arm` runners and smoke-tests each image (locked down, on the
+  sample frames) before anything is pushed.
+- `release.yml` runs on every push to `main`. It calls Lint and Test, then python-semantic-release
+  (PSR), then `build-image.yml` with `push: true` if PSR released. That job publishes
+  `ghcr.io/icooper/oiltank` as `X.Y.Z`, `X.Y`, `X` and `latest`.
+- **Releases are tag-only.** `main` needs signed commits through PRs, so CI never commits. PSR
+  (`version --no-commit --tag`) tags the merge commit and creates the GitHub Release with
+  `GITHUB_TOKEN`. **The version in `pyproject.toml` is a placeholder (`0.0.0`); never edit it.**
+  `build-image.yml` stamps the release version with `uv version --no-sync`, which rewrites only
+  that line and `uv.lock`'s root entry, just before `docker build`.
+- PRs are squash-merged with the PR title as the commit message, and PSR reads it. So **commit
+  messages and PR titles you suggest must be conventional**, typed by their effect on users:
+  `feat` (minor), `fix`/`perf` (patch), `!` after the type (major), and `build`, `chore`, `ci`,
+  `docs`, `refactor`, `style`, `test` (no release). `pr-title.yml`'s regex mirrors PSR's
+  conventional parser; re-check it when upgrading PSR.
+- Pinning: actions by full commit SHA with a `# vX.Y.Z` comment (Dependabot updates them); PSR by
+  `PSR_VERSION` plus `PSR_EXCLUDE_NEWER` in `release.yml`, bumped together, because unpinned
+  transitive dependencies (GitPython) have broken it; uv once, as `[tool.uv] required-version` in
+  `pyproject.toml`. setup-uv reads it from there, so never give a `setup-uv` step a `version`.
+  The Dockerfile's `ARG UV_VERSION` default must match; `test_uv_version.py` checks both.
+- Every workflow sets `permissions: {}` and grants per job, except `build-image.yml`, which has no
+  `permissions` on purpose: its jobs inherit the caller's grant (PRs `contents: read`, releases
+  also `packages: write`), and a called workflow can only narrow it. Concurrency groups use a
+  literal prefix, because in a called workflow `github.workflow` is the caller's name. Pass
+  untrusted values (e.g. the PR title) to scripts through `env:`, never `${{ }}` inside `run:`.
+  Check changes with actionlint and zizmor (see Commands).
+
 ## Conventions
 
-- Diagrams in README.md and CLAUDE.md are Mermaid code blocks, never ASCII art.
+- Diagrams in README.md, CONTRIBUTING.md and CLAUDE.md are Mermaid code blocks, never ASCII art.
+- README.md is for people running the service; developer material goes in CONTRIBUTING.md. The
+  configuration table stays in README.md.
 - Strict typing (mypy strict). Prefer frozen dataclasses, and `pathlib` over `os.path`.
 - Settings are `OILTANK_<SECTION>_<KEY>` with **single underscores** (e.g.
   `OILTANK_CAMERA_BURST_FRAMES`). Sections are split off at the first underscore

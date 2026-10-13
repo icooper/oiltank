@@ -1,0 +1,83 @@
+name: Release
+
+# On every merge to main: lint and test, then let python-semantic-release decide from the
+# conventional commit messages whether this is a release. If it is, PSR tags the merge commit and
+# creates the GitHub Release, and the images are built and published.
+#
+# Releases are tag-only. main needs signed commits through PRs, so PSR never pushes a commit; the
+# ruleset only covers the branch, so GITHUB_TOKEN can push the tag. Tags and releases made with
+# GITHUB_TOKEN don't trigger other workflows, which is why the image is a job here and not an
+# `on: release` workflow.
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# Merges queue up instead of racing: each run tags only after the one before it has finished.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # PSR runs from PyPI with uvx, not through its action. --exclude-newer freezes its whole
+  # dependency tree to what PyPI had on that date; GitPython releases have broken PSR before.
+  # Bump both together, and preview the result first (CONTRIBUTING.md).
+  PSR_VERSION: "10.7.0"
+  PSR_EXCLUDE_NEWER: "2026-09-29"
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    permissions:
+      contents: read
+
+  test:
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: [lint, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the tag and create the GitHub Release
+    outputs:
+      released: ${{ steps.psr.outputs.released }}
+      version: ${{ steps.psr.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # PSR reads the tags and the history since the last release
+          persist-credentials: false # PSR pushes the tag with GH_TOKEN itself
+
+      # The tag must land on the commit that was linted and tested, not a newer one.
+      - name: Check HEAD is the commit that triggered this run
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false # no cache in a job that can publish
+
+      # Writes released, version, tag, ... to $GITHUB_OUTPUT. With nothing to release since the
+      # last tag (only docs:, chore:, ...), it exits 0 with released=false.
+      - name: Tag and release
+        id: psr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          uvx --exclude-newer "$PSR_EXCLUDE_NEWER" --from "python-semantic-release==$PSR_VERSION"
+          semantic-release -v version --no-commit --tag --no-changelog --skip-build
+
+  image:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    uses: ./.github/workflows/build-image.yml
+    permissions:
+      contents: read
+      packages: write # push the images to GHCR
+    with:
+      version: ${{ needs.release.outputs.version }}
+      push: true

@@ -1,0 +1,61 @@
+name: PR title
+
+# PRs are squash-merged with the PR title as the commit message, and python-semantic-release
+# decides each release from those messages. So the title has to be a conventional commit.
+# `synchronize` is listed so that every new head commit gets this check, which a required check
+# needs.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Check the title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # The header regex and default types of python-semantic-release's conventional parser
+          # (commit_parser/conventional/parser.py and options.py, v10.7.0) in POSIX ERE, so a
+          # title passes exactly when PSR can parse it. Re-check them when upgrading PSR.
+          re='^(feat|fix|perf|build|chore|ci|docs|style|refactor|test)(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'
+
+          if [[ ! $TITLE =~ $re ]]; then
+            echo "::error title=PR title::The title must be a conventional commit, such as 'feat: add X' or 'fix(mqtt): handle Y'. See the job summary."
+            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## The PR title must be a conventional commit
+
+          It becomes the squash-merge commit, and python-semantic-release reads it to decide the
+          next release. Format: `type(optional scope)!: subject`, with a lowercase type.
+
+          | Type | Release |
+          |---|---|
+          | `feat` | minor |
+          | `fix`, `perf` | patch |
+          | `build`, `chore`, `ci`, `docs`, `refactor`, `style`, `test` | none |
+          | any type with `!` before the colon, e.g. `feat!:` | major |
+          EOF
+            exit 1
+          fi
+
+          type=${BASH_REMATCH[1]}
+          if [[ -n ${BASH_REMATCH[3]} ]]; then
+            release="a **major** release (breaking change)"
+          elif [[ $type == feat ]]; then
+            release="a **minor** release"
+          elif [[ $type == fix || $type == perf ]]; then
+            release="a **patch** release"
+          else
+            release="**no release**"
+          fi
+          echo "Type \`$type\`: merging this PR makes $release." >> "$GITHUB_STEP_SUMMARY"
+          echo "Type $type: merging makes ${release//\*/}."

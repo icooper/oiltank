@@ -1,0 +1,19 @@
+name: Image
+
+# Builds and smoke-tests the image on amd64 and arm64 for every PR, without pushing it. Releases
+# call build-image.yml from release.yml instead, with packages: write.
+
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: image-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    uses: ./.github/workflows/build-image.yml
+    permissions:
+      contents: read

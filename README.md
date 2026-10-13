@@ -12,6 +12,9 @@ publishes the volume, the usage rate and days left, refills, an annotated gauge 
 **Read now** button, and a problem flag. It keeps a history and an archive of what it saw, which
 is enough to train a model later, and it can record an oil delivery frame by frame.
 
+Images are published for amd64 and arm64, so it also runs on a Raspberry Pi. To build it yourself,
+run the tests or make changes, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
@@ -34,9 +37,8 @@ is enough to train a model later, and it can record an oil delivery frame by fra
   - [Dashboard card](#dashboard-card)
 - [Accuracy and limitations](#accuracy-and-limitations)
 - [Troubleshooting](#troubleshooting)
-- [Development](#development)
+- [Updating](#updating)
 - [Container and security](#container-and-security)
-- [Roadmap](#roadmap)
 - [License](#license)
 
 ## How it works
@@ -103,19 +105,30 @@ model, running on CPU or an NVIDIA GPU, can replace it through config later.
   | 1280×720 | ~42 px | ~2.4% |
   | 640×360 (typical snapshot/substream) | ~21 px | ~4.8% |
 
-- A **Docker** host, an **MQTT broker**, and Home Assistant's
+- A **Docker** host on amd64 or arm64, such as a PC or a Raspberry Pi 4 or 5 running a 64-bit OS;
+  an **MQTT broker**; and Home Assistant's
   [MQTT integration](https://www.home-assistant.io/integrations/mqtt/).
 
 ## Quick start
 
 `docker-compose.yml` already has the hardened deployment settings: non-root, read-only root
 filesystem, no capabilities, `./data` for state, and a healthcheck. All configuration comes from
-`.env`.
+`.env`. You need those two files from this repository, `docker-compose.yml` and `.env.example`.
+Clone it, or fetch just them:
 
 ```sh
-mkdir -p data && sudo chown 65532:65532 data
+mkdir oiltank && cd oiltank
+curl -fsSLO https://raw.githubusercontent.com/icooper/oiltank/main/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/icooper/oiltank/main/.env.example
+```
+
+Then create `.env`, pull the image (`ghcr.io/icooper/oiltank`, for amd64 or arm64) and check the
+camera:
+
+```sh
 cp .env.example .env                       # then fill in the camera URL, MQTT broker, ...
-docker compose build
+mkdir -p data && sudo chown 65532:65532 data
+docker compose pull
 alias oiltank='docker compose run --rm oiltank'
 oiltank grab --out /data/frame.jpg         # check the camera: a full-size frame in ./data
 ```
@@ -132,15 +145,8 @@ docker compose logs -f                     # a line per reading
 ```
 
 The **Oil Tank** device then appears in Home Assistant (see [Home Assistant](#home-assistant)).
-
-You can also try the sample frames without a camera or `.env`:
-
-```sh
-docker build -t oiltank:dev .
-docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev \
-  read -c /samples/calibration.yaml --image /samples/frame0.jpg --image /samples/frame1.jpg
-# level 98.1%  (t=0.820, confidence 1.00, indicator at x=2168.0 y=1047.3, 2 frame(s))
-```
+To try it on sample frames first, without a camera, see
+[CONTRIBUTING.md](CONTRIBUTING.md#building-the-image).
 
 `read` fetches a burst of frames from the camera, or reads image files given with `--image`
 (repeat it for a burst). It exits 0 for a good reading, 1 if there is no trustworthy reading or
@@ -311,9 +317,6 @@ The commands below run in the container, where `./data` is mounted at `/data` an
 ```sh
 alias oiltank='docker compose run --rm oiltank'
 ```
-
-From a checkout, `uv run oiltank ...` uses the same `./data`, with local paths such as
-`data/frame.jpg`.
 
 1. **Save a full-size frame** from the camera into `./data`:
 
@@ -627,7 +630,8 @@ follow it.
   dome cap was F read 82% instead of 98%. Add points from readings you trust, and from deliveries.
 - **Volume is level × capacity.** That assumes the gauge's marks are fractions of the tank's
   volume, which is how gauges for a given tank size are usually marked. If yours aren't, points at
-  known volumes (delivery tickets) correct it. A proper tank chart is on the roadmap.
+  known volumes (delivery tickets) correct it. A proper tank chart is on the
+  [roadmap](CONTRIBUTING.md#roadmap).
 - **The disc size matters.** A template much smaller than the disc can lock onto a highlight with
   full confidence; see [Disc size](#disc-size). `calibrate show` reports how much margin you have.
 - **Tested so far near full.** The sample frames, day and night, all show the tank at about 98%.
@@ -670,77 +674,28 @@ MQTT problems, from `oiltank mqtt`:
 `docker compose ps` shows `unhealthy` if the service's loop stops making progress. Docker
 doesn't restart unhealthy containers by itself, but `docker compose logs` shows why.
 
-## Development
+## Updating
 
-The project uses [uv](https://docs.astral.sh/uv/) and Python 3.14. The code is in
-`src/oiltank/`:
-
-| Module | Does |
-|---|---|
-| `sources/` | Frames: go2rtc over HTTP (`http.py`) or image files (`files.py`) |
-| `geometry.py`, `readers/`, `pipeline.py` | Align, rectify and read a burst; pure |
-| `calibration.py`, `calibrate.py` | The calibration model, and the tools behind `oiltank calibrate` |
-| `filter.py`, `history.py`, `archive.py` | Filtering and derived values (pure), SQLite history, the frame archive |
-| `publish/` | Home Assistant discovery and state (pure), and the MQTT connection |
-| `service.py` | The service loop |
-| `annotate.py` | The gauge, diagnostic and grid images |
-| `config.py`, `model.py`, `cli/` | Settings, shared data types, the command line |
-
-[CLAUDE.md](CLAUDE.md) has the design rules that keep these apart.
+Each release is published to `ghcr.io/icooper/oiltank` for amd64 and arm64, with
+[release notes](https://github.com/icooper/oiltank/releases). To update:
 
 ```sh
-uv sync                                       # create .venv from uv.lock
-uv run pytest                                 # tests (integration tests excluded)
-uv run pytest -m integration                  # integration tests (need Docker)
-uv run ruff format . && uv run ruff check .   # format + lint
-uv run mypy                                   # strict type checking
-uv run oiltank --help
+docker compose pull && docker compose up -d
 ```
 
-Sample frames for tests and development are in `samples/`. They are native 4K go2rtc captures,
-taken a week after a fill with the tank at about 98%. `frame0`–`frame5` are from the late
-afternoon, with daylight through the basement window. `frame6`–`frame9` are from late evening,
-with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
-
-- `tests/unit/`: calibration, geometry, peak finding, annotation, and the `read` and `calibrate`
-  commands;
-- `tests/cv/test_golden.py`: the real frames one by one, and day, night and mixed bursts;
-- `tests/cv/test_synthetic.py`: the disc moved along its travel or removed; noise, JPEG, blur and
-  gain/gamma; camera nudges and large moves; 1280×720 and 640×360 frames;
-- `tests/cv/test_calibrate.py`: the calibration tools (disc-size scan, anchor check, rebase) on
-  the real frames;
-- `tests/unit/test_http_source.py` and `test_cli_camera.py`: the go2rtc source against a mocked
-  transport, and the camera commands against a fake go2rtc on localhost (auth, retries, timeouts,
-  wrong stream, duplicates);
-- `tests/unit/test_config.py`: settings, `.env` and unknown-name detection;
-- `tests/unit/test_discovery.py`: the discovery message, against the golden file
-  `tests/data/discovery.json`, and the state payload;
-- `tests/unit/test_filter.py`, `test_history.py` and `test_service.py`: the level filter (smoothing,
-  refills, usage, problems), the SQLite history, and the service loop with a scripted camera;
-- `tests/unit/test_archive.py`: archive records and their labels, the full-frame schedule, and the
-  size limit; `test_cli_camera.py` also covers `capture`;
-- `tests/integration/test_mqtt.py` and `test_service.py` (`-m integration`, need Docker): a real
-  Mosquitto broker, covering retained discovery, state and image, the button and HA-restart
-  events, the last will and `clear`. Also `oiltank run` end to end against a fake go2rtc,
-  including the healthcheck and SIGTERM.
-
-Tests never read your `.env` or `OILTANK_*` variables: they run in an empty working directory with
-those variables removed.
-
-New sample frames have to be listed as day or night in `tests/conftest.py`; a test fails until they
-are.
-
-```sh
-uv run oiltank read -c samples/calibration.yaml --image samples/frame0.jpg \
-  --annotate gauge.jpg --diagnostic check.jpg
-uv run oiltank calibrate show -c samples/calibration.yaml --diagnostic check.jpg
-```
+Versions follow [semantic versioning](https://semver.org/), and each release is tagged four ways,
+for example `1.4.2`, `1.4`, `1` and `latest`. `docker-compose.yml` uses `latest`. To take only
+compatible updates, pin the major version instead (`image: ghcr.io/icooper/oiltank:1`), or pin a
+full version to stay on one release. `./data` (the calibration, history and archive) is kept
+across updates.
 
 ## Container and security
 
 The image is built in two stages. A uv builder installs a uv-managed CPython 3.14 and a
 non-editable virtualenv, which are copied into
-[`gcr.io/distroless/cc-debian12:nonroot`](https://github.com/GoogleContainerTools/distroless):
+[`gcr.io/distroless/cc-debian12:nonroot`](https://github.com/GoogleContainerTools/distroless).
+It's built natively for amd64 and arm64, and each one is smoke-tested on its own architecture,
+running locked down on the sample frames, before it's published.
 
 - no shell or package manager in the runtime image;
 - runs as uid/gid **65532**, never root;
@@ -748,7 +703,7 @@ non-editable virtualenv, which are copied into
   `no-new-privileges`, which is how `docker-compose.yml` runs it. The only writable place is the
   `./data` mount:
   ```sh
-  docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges oiltank:dev --version
+  docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges ghcr.io/icooper/oiltank --version
   ```
 - zlib is the only system library added on top of distroless, because the numpy and OpenCV wheels
   link against it;
@@ -756,18 +711,6 @@ non-editable virtualenv, which are copied into
   (`.dockerignore` is an allowlist). Settings and credentials come from `.env` at run time, and
   credentials are never logged;
 - it only makes outbound connections, to go2rtc and the MQTT broker. It listens on no ports.
-
-## Roadmap
-
-- **A learned reader.** Train a small model on the archive's labelled strips and run it with
-  ONNX Runtime, on the CPU or on an NVIDIA GPU (a `gpu` image variant with
-  `onnxruntime-gpu`, enabled through config and the commented `deploy:` block in
-  `docker-compose.yml`). The reader interface and the per-row score format are already shared.
-- **A tank volume chart**, for gauges whose marks aren't fractions of volume.
-- **Calibration points from a delivery capture and its ticket**, worked out automatically.
-- **A learned background model** of the wall behind the dome, to separate the disc from clutter.
-- **A direct RTSP source** (PyAV, as an optional extra) for setups without go2rtc.
-- **CI**: tests and image builds on every push.
 
 ## License
 
