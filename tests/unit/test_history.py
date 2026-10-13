@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -141,3 +142,65 @@ def test_unregistered_epochs_cannot_be_stored(tmp_path: Path) -> None:
             frames=1,
             epoch=successor(None, "frame0.jpg", SAMPLE_AXIS),
         )
+
+
+def test_readers_see_writes_and_cannot_write(tmp_path: Path) -> None:
+    path = tmp_path / "oiltank.db"
+    with History(path) as writer:
+        assert writer._db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        epoch, _ = writer.register_epoch("frame0.jpg", SAMPLE_AXIS, T0)
+        writer.add(Observation(T0, 0.9, 0.97, 0.75, None), accepted=True, frames=5, epoch=epoch)
+        with History.open_readonly(path) as reader:
+            assert reader.count() == 1
+            writer.add(
+                Observation(T0 + timedelta(minutes=15), None, 0.2, None, Problem.LOW_CONFIDENCE),
+                accepted=False,
+                frames=5,
+                epoch=epoch,
+            )
+            assert reader.count() == 2  # while the writer is still open
+            [first, second] = reader.readings(T0)
+            assert (first.accepted, first.frames, first.epoch) == (True, 5, epoch.id)
+            assert (second.accepted, second.problem) == (False, Problem.LOW_CONFIDENCE)
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                reader.add_fill(Fill(T0, 0.2, 0.9))
+
+
+def test_reading_a_copy_in_a_read_only_directory(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root can write anywhere")
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    with History(copy / "oiltank.db") as h:
+        h.add(Observation(T0, 0.9, 0.97, 0.75, None), accepted=True, frames=5)
+    copy.chmod(0o555)
+    try:
+        with History.open_readonly(copy / "oiltank.db") as reader:
+            assert reader.count() == 1
+    finally:
+        copy.chmod(0o755)
+
+
+def test_read_only_needs_an_upgraded_history(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        History.open_readonly(tmp_path / "missing.db")
+    old = tmp_path / "old.db"
+    db = sqlite3.connect(old)
+    db.executescript(SCHEMA_1)
+    db.close()
+    with pytest.raises(RuntimeError, match="upgrades it"):
+        History.open_readonly(old)
+
+
+def test_ranges(tmp_path: Path) -> None:
+    with History(tmp_path / "oiltank.db") as h:
+        for k in range(4):
+            h.add(
+                Observation(T0 + timedelta(hours=k), 0.5, 0.9, 0.5, None), accepted=True, frames=1
+            )
+            h.add_fill(Fill(T0 + timedelta(hours=k), 0.2, 0.9))
+        window = (T0 + timedelta(hours=1), T0 + timedelta(hours=3))
+        assert [r.ts.hour for r in h.readings(*window)] == [7, 8]
+        assert [o.ts.hour for o in h.observations(*window)] == [7, 8]
+        assert [f.ts.hour for f in h.fills(*window)] == [7, 8]
+        assert len(h.fills()) == 4

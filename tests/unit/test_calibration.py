@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -252,3 +253,15 @@ def test_load_rejects_non_mapping(tmp_path: Path) -> None:
     path.write_text("version: [1\n")
     with pytest.raises(CalibrationError, match="not valid YAML"):
         Calibration.load(path)
+
+
+@pytest.mark.parametrize("points", [[], [0.4], [0.2, 0.9], [0.1, 0.5, 0.95]])
+def test_fractions_match_fraction(points: list[float]) -> None:
+    cal = Calibration.build(
+        Path(),
+        **_data(points=[{"t": f * 0.9 + 0.05, "fraction": f} for f in points]),
+    )
+    t = np.array([-0.4, -0.1, 0.0, 0.03, 0.3, 0.5, 0.77, 1.0, 1.2, np.nan])
+    many = cal.fractions(t)
+    assert np.isnan(many[-1])
+    assert many[:-1] == pytest.approx([cal.fraction(float(x)) for x in t[:-1]])
