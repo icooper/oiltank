@@ -6,6 +6,7 @@ reference path in the YAML is resolved relative to the YAML file's directory.
 
 import hashlib
 import itertools
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Self
 
@@ -29,6 +30,26 @@ class CalibrationError(ValueError):
 
 class ResolutionMismatch(CalibrationError):  # noqa: N818 - reads better than ...Error here
     """A frame's size differs from the size the calibration was made at."""
+
+
+def reference_name(ts: datetime, suffix: str = ".jpg") -> Path:
+    """The file name for a new reference frame taken at ``ts``: ``reference-<UTC time>.jpg``."""
+    return Path(f"reference-{ts.astimezone(UTC):%Y%m%d-%H%M%S}{suffix}")
+
+
+def save_reference(calibration_dir: Path, name: Path, data: bytes) -> None:
+    """Write a reference frame's bytes, exactly as received, next to the calibration (unless a
+    file of that name is already there: reference frames are never overwritten).
+
+    Raises OSError if it can't be written.
+    """
+    target = calibration_dir / name
+    if target.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.tmp")
+    tmp.write_bytes(data)
+    tmp.replace(target)
 
 
 def calibration_etag(path: Path) -> str:

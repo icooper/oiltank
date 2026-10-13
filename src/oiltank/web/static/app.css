@@ -261,7 +261,9 @@ select {
   border-radius: 6px;
 }
 .plots:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
-.plots canvas { display: block; }
+.plots canvas { display: block; max-width: 100%; }
+/* Let a narrower window shrink the plots: the canvases' drawn widths mustn't hold them open. */
+main > *, .plots { min-width: 0; }
 #strips { margin-top: 6px; }
 .overlay { position: absolute; top: 0; left: 0; touch-action: none; cursor: col-resize; }
 

@@ -1,10 +1,11 @@
-"""Changing the calibration's points from the web UI.
+"""Changing the calibration from the web UI: its points here, and its geometry with
+:mod:`oiltank.web.geometry_api`.
 
-The browser keeps a draft: the list of points. The server works out new points (from a reading
-you trust, or from a delivery and its ticket) and adds them to the draft the way ``oiltank
-calibrate point`` does, so a point with the same reading is replaced and the points must still
-rise together. A draft can be previewed against the history, then saved; the save is refused if
-the calibration file has changed since the draft started (``If-Match``).
+The browser keeps a draft: the points, and the axis, disc and anchor. The server works out new
+points (from a reading you trust, or from a delivery and its ticket) and adds them to the draft
+the way ``oiltank calibrate point`` does, so a point with the same reading is replaced and the
+points must still rise together. A draft can be previewed against the history, then saved; the
+save is refused if the calibration file has changed since the draft started (``If-Match``).
 """
 
 from datetime import UTC, date, datetime, timedelta
@@ -16,11 +17,18 @@ from fastapi import APIRouter, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from oiltank.calibrate import SAME_POINT, dated_note, warnings, with_point
-from oiltank.calibration import Calibration, CalibrationError, CalibrationPoint
+from oiltank.calibration import (
+    Calibration,
+    CalibrationError,
+    CalibrationPoint,
+    reference_name,
+)
 from oiltank.config import Settings
+from oiltank.epochs import AxisEpoch, Change, successor
 from oiltank.filter import FilterParams
 from oiltank.service import CalibrationConflictError, ServiceBusyError, ServiceStoppedError
 from oiltank.web.control import Control, Current
+from oiltank.web.frames import FrameRef, FrameStore, NoSuchFrame
 from oiltank.web.history_api import read_history, series_payload
 from oiltank.web.responses import json_response
 from oiltank.web.timeline import build_series, scale
@@ -31,7 +39,16 @@ RECENT_FILLS = 12
 
 
 class Draft(BaseModel):
-    points: list[CalibrationPoint]
+    """A changed calibration: its points, and any geometry that changed (the rest as saved).
+
+    The geometry is checked when it's applied to the saved calibration (:meth:`Workspace.draft`),
+    not here, so a check of a draft that doesn't work can say why.
+    """
+
+    points: list[dict[str, Any]]
+    axis: dict[str, Any] | None = None
+    disc: dict[str, Any] | None = None
+    anchor: dict[str, Any] | None = None
 
 
 class FromReading(Draft):
@@ -54,46 +71,88 @@ class Preview(Draft):
 
 class Save(Draft):
     read_now: bool = False
+    reference: FrameRef | None = None
+    """A rebase: this frame becomes the reference, and the geometry moved with the camera."""
 
 
-def _error(e: ValidationError) -> str:
+def error_text(e: ValidationError) -> str:
+    """A validation error, in words (its first one, and where)."""
     err = e.errors()[0]
     msg = str(err["msg"]).removeprefix("Value error, ")
-    return msg
+    where = ".".join(str(part) for part in err["loc"])
+    return f"{where}: {msg}" if where else msg
 
 
-def calibration_router(
-    settings: Settings, control: Control, history_path: Path, *, read_only: bool
-) -> APIRouter:
-    router = APIRouter()
-    tank = settings.tank
+class Workspace:
+    """What the calibration and geometry routes share: the calibration file, the calibration
+    readings are shown with, and drafts made against them."""
 
-    def loaded() -> tuple[Calibration, str]:
-        found = control.calibration_file().load()
+    def __init__(self, settings: Settings, control: Control, history_path: Path) -> None:
+        self.settings = settings
+        self.control = control
+        self.history_path = history_path
+
+    def loaded(self) -> tuple[Calibration, str]:
+        """The calibration file as it is now, and its tag."""
+        found = self.control.calibration_file().load()
         if found is None:
             raise HTTPException(409, "there's no usable calibration to change")
         return found
 
-    def current() -> Current:
-        cur = control.current()
+    def current(self) -> Current:
+        cur = self.control.current()
         if cur is None:
             raise HTTPException(409, "there's no usable calibration")
         return cur
 
-    def drafted(points: list[CalibrationPoint]) -> Calibration:
-        try:
-            return loaded()[0].updated(points=points)
-        except ValidationError as e:
-            raise HTTPException(422, f"those points don't fit together: {_error(e)}") from e
+    def draft(self, draft: Draft) -> Calibration:
+        """The saved calibration with the draft's changes; raises ValidationError if they don't
+        make a calibration."""
+        changes: dict[str, Any] = {"points": draft.points}
+        for name in ("axis", "disc", "anchor"):
+            if getattr(draft, name) is not None:
+                changes[name] = getattr(draft, name)
+        return self.loaded()[0].updated(**changes)
 
-    def added(points: list[CalibrationPoint], point: CalibrationPoint) -> dict[str, Any]:
+    def drafted(self, draft: Draft) -> Calibration:
+        """:meth:`draft`, as a 422 if it doesn't make a calibration."""
+        try:
+            return self.draft(draft)
+        except ValidationError as e:
+            raise HTTPException(422, f"that doesn't make a calibration: {error_text(e)}") from e
+
+    def current_for(self, calibration: Calibration) -> Current:
+        """``calibration``, with the epoch its axis would have: stored ``t`` carried onto it."""
+        cur = self.current()
+        if calibration.axis == cur.calibration.axis:
+            return Current(calibration, cur.epoch)
+        reference = calibration.reference_image.as_posix()
+        with read_history(self.history_path) as h:
+            epoch = (
+                h.epoch_for(reference, calibration.axis)[0]
+                if h is not None
+                else successor(None, reference, calibration.axis)
+            )
+        return Current(calibration, epoch)
+
+
+def calibration_router(workspace: Workspace, frames: FrameStore, *, read_only: bool) -> APIRouter:
+    router = APIRouter()
+    settings, control, history_path = workspace.settings, workspace.control, workspace.history_path
+    tank = settings.tank
+    loaded, current = workspace.loaded, workspace.current
+
+    def drafted(points: list[dict[str, Any]]) -> Calibration:
+        return workspace.drafted(Draft(points=points))
+
+    def added(points: list[dict[str, Any]], point: CalibrationPoint) -> dict[str, Any]:
         draft = drafted(points)
         try:
             updated, replaced = with_point(draft, point)
         except ValidationError as e:
-            raise HTTPException(422, _conflict(draft, point) or _error(e)) from e
+            raise HTTPException(422, _conflict(draft, point) or error_text(e)) from e
         return {
-            **_points(updated),
+            **points_of(updated),
             "point": point.model_dump(mode="json", exclude_none=True),
             "replaced": [p.model_dump(mode="json", exclude_none=True) for p in replaced],
         }
@@ -111,7 +170,12 @@ def calibration_router(
             "read_only": read_only,
             "unit": tank.unit,
             "capacity": tank.capacity,
-            **_points(calibration),
+            "reference_image": calibration.reference_image.as_posix(),
+            "frame_size": list(calibration.frame_size),
+            "axis": calibration.axis.model_dump(mode="json"),
+            "disc": calibration.disc.model_dump(mode="json"),
+            "anchor": calibration.anchor.model_dump(mode="json"),
+            **points_of(calibration),
             "scale": scale(calibration),
             "warnings": warnings(calibration),
             "fills": [
@@ -127,9 +191,10 @@ def calibration_router(
 
     @router.post("/api/calibration/preview")
     def preview(request: Request, body: Preview) -> Response:
-        """The readings as they would be with the draft's points."""
+        """The readings as they would be with the draft (a changed axis carries them onto it)."""
+        draft = workspace.current_for(workspace.drafted(body))
         payload = series_payload(
-            settings, history_path, current(), drafted(body.points), body.start, body.end
+            settings, history_path, draft, draft.calibration, body.start, body.end
         )
         return json_response(request, payload)
 
@@ -214,15 +279,18 @@ def calibration_router(
         body: Save,
         if_match: Annotated[str | None, Header()] = None,
     ) -> Response:
-        """Save the draft's points as the calibration, and use them at once."""
+        """Save the draft as the calibration, and use it at once."""
         if read_only:
             raise HTTPException(403, "the web UI is read-only (OILTANK_WEB_READ_ONLY)")
         if if_match is None:
             raise HTTPException(428, "say which calibration the changes were made to (If-Match)")
-        draft = drafted(body.points)
+        draft = workspace.drafted(body)
+        reference = None
+        if body.reference is not None:
+            draft, reference = rebased(draft, body.reference)
         try:
             etag = control.save_calibration(
-                draft, if_match=if_match.strip('"'), read_now=body.read_now
+                draft, if_match=if_match.strip('"'), read_now=body.read_now, reference=reference
             )
         except CalibrationConflictError as e:
             raise HTTPException(
@@ -234,12 +302,33 @@ def calibration_router(
             raise HTTPException(422, str(e)) from e
         except (ServiceBusyError, ServiceStoppedError) as e:
             raise HTTPException(503, f"not saved: {e}") from e
-        return json_response(request, describe(drafted(body.points), etag))
+        saved, _ = loaded()
+        return json_response(request, describe(saved, etag))
+
+    def rebased(draft: Calibration, ref: FrameRef) -> tuple[Calibration, bytes]:
+        """``draft`` on a new reference frame, which must only have moved the geometry with the
+        camera: readings can't be carried across a rebase and an axis edit at once."""
+        try:
+            frame = frames.get(ref)
+        except NoSuchFrame as e:
+            raise HTTPException(404, str(e)) from e
+        if ref.kind == "reference" or frame.data is None:
+            raise HTTPException(422, "rebase onto an archived or newly grabbed frame")
+        name = reference_name(frame.ts)
+        saved, _ = loaded()
+        before = AxisEpoch(saved.reference_image.as_posix(), saved.axis.top, saved.axis.bottom)
+        if successor(before, name.as_posix(), draft.axis).change is not Change.REBASE:
+            raise HTTPException(
+                422,
+                "a rebase only moves the gauge with the camera; save it on its own, then change "
+                "the axis",
+            )
+        return draft.updated(reference_image=name), frame.data
 
     return router
 
 
-def _points(calibration: Calibration) -> dict[str, Any]:
+def points_of(calibration: Calibration) -> dict[str, Any]:
     """``points`` as the draft holds them, in order of position, and each one's ``t`` on the
     axis (``positions``, for showing; not part of a point)."""
     ordered = sorted(calibration.points, key=lambda p: p.t_on(calibration.axis))

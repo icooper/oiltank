@@ -45,7 +45,14 @@ class FakeControl:
     def calibration_file(self) -> CalibrationFile:
         return CalibrationFile(Path("missing.yaml"))
 
-    def save_calibration(self, calibration: Calibration, *, if_match: str, read_now: bool) -> str:
+    def save_calibration(
+        self,
+        calibration: Calibration,
+        *,
+        if_match: str,
+        read_now: bool,
+        reference: bytes | None = None,
+    ) -> str:
         raise AssertionError("not expected")
 
     def service_info(self) -> ServiceInfo:

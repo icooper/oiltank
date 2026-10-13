@@ -169,7 +169,8 @@ class DiscScan:
     """``(t, number of sizes)`` for other positions, clearly apart from ``consensus_t``, that
     several sizes agree on."""
 
-    def _index(self, disc: Disc) -> tuple[int, int]:
+    def index(self, disc: Disc) -> tuple[int, int]:
+        """``[width, height]`` indexes of the scanned size nearest ``disc``."""
         i = int(np.argmin(np.abs(np.log(np.array(self.widths) / disc.width))))
         j = int(np.argmin(np.abs(np.log(np.array(self.heights) / disc.height))))
         return i, j
@@ -178,7 +179,7 @@ class DiscScan:
         """The widths (at ``disc``'s height) and heights (at its width) over which the reading
         stays put, or None if ``disc`` (the nearest scanned size) isn't in the stable region.
         """
-        i, j = self._index(disc)
+        i, j = self.index(disc)
         if not self.stable[i, j]:
             return None
         (wl, wh), (hl, hh) = _run(self.stable[:, j], i), _run(self.stable[i, :], j)
@@ -186,7 +187,7 @@ class DiscScan:
 
     def at_edge(self, disc: Disc) -> bool:
         """Whether a size one step away from ``disc`` already reads elsewhere (inside the grid)."""
-        i, j = self._index(disc)
+        i, j = self.index(disc)
         if not self.stable[i, j]:
             return True
         last = len(self.widths) - 1, len(self.heights) - 1

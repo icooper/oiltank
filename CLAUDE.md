@@ -166,6 +166,15 @@ flowchart LR
       edit.
     - In `oiltank run`, saves go through `Service.call` → `apply_calibration`, so the service
       switches at once.
+  - **Geometry editing** (`geometry_api.py`, `frames.py`, `drafts.py`):
+    - `FrameStore` decodes and keeps a few frames: the reference, archived full frames, and
+      camera grabs, for 30 minutes.
+    - `drafts.evaluate` runs the reader, the anchor self-test and the warnings for a draft's
+      geometry, with the anchor cut from the reference frame in memory. A draft that isn't a
+      calibration comes back as `valid: false`, not as a 422.
+    - A rebase saves a new reference frame with the geometry moved by the anchor's shift. **The
+      save refuses a rebase combined with an axis edit:** that would be a `NEW_REFERENCE` epoch,
+      which can't carry stored readings.
     - The Node version is `.nvmrc`'s (`nvm use` locally; `setup-node` with `node-version-file`
       in workflows). Node is the one tool not run through uv.
 

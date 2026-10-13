@@ -29,6 +29,7 @@ from oiltank.calibration import (
     CalibrationError,
     ResolutionMismatch,
     calibration_etag,
+    save_reference,
 )
 from oiltank.config import Settings
 from oiltank.epochs import AxisEpoch, Change
@@ -218,17 +219,27 @@ class Service:
 
     # ---- one reading ---------------------------------------------------------------------------
 
-    def apply_calibration(self, calibration: Calibration, *, if_match: str) -> Snapshot:
+    def apply_calibration(
+        self, calibration: Calibration, *, if_match: str, reference: bytes | None = None
+    ) -> Snapshot:
         """Save ``calibration`` as the calibration file and switch to it now: reload, replay the
         history with it and publish the result. Call it through :meth:`call`.
 
-        ``if_match`` is the tag of the file the change was made to. Raises
-        CalibrationConflictError if the file has changed since, and CalibrationError if the
-        reference frame can't be used (nothing is saved then).
+        ``if_match`` is the tag of the file the change was made to. ``reference`` is a new
+        reference frame's bytes, written to ``calibration.reference_image`` first (a rebase).
+        Raises CalibrationConflictError if the file has changed since, and CalibrationError if
+        the reference frame can't be used (the calibration isn't saved then).
         """
         current = calibration_etag(self._calibration_path)
         if current != if_match:
             raise CalibrationConflictError(current)
+        if reference is not None:
+            try:
+                save_reference(
+                    self._calibration_path.parent, calibration.reference_image, reference
+                )
+            except OSError as e:
+                raise CalibrationError(f"cannot write the reference frame: {e}") from e
         try:
             Aligner(calibration.anchor, calibration.anchor_patch)  # the reference must be usable
         except (OSError, FrameDecodeError) as e:

@@ -309,3 +309,22 @@ def _wait(condition: Callable[[], bool], timeout: float = 20.0) -> None:
         if datetime.now(UTC) > deadline:
             raise AssertionError("timed out")
         threading.Event().wait(0.05)
+
+
+def test_apply_calibration_with_a_new_reference(
+    rig: Rig, settings: Settings, sample_frames: list[Frame]
+) -> None:
+    rig.service.cycle()
+    snap = rig.service.snapshot
+    gray = synth.shift(sample_frames[0].gray, 14, -9)  # the camera was bumped
+    ok, jpeg = cv2.imencode(".jpg", gray)
+    assert ok
+    name = Path("reference-bumped.jpg")
+    moved = shifted(snap.calibration, 14, -9, name)
+    after = rig.service.apply_calibration(
+        moved, if_match=snap.calibration_etag, reference=jpeg.tobytes()
+    )
+    assert (settings.data_dir / name).read_bytes() == jpeg.tobytes()
+    assert after.calibration.reference_image == name
+    assert after.epoch.change is Change.REBASE
+    assert after.state is not None and after.state.fraction == pytest.approx(0.98, abs=0.01)

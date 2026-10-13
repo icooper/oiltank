@@ -16,8 +16,11 @@ from starlette.types import Scope
 from oiltank.archive import ArchiveReader
 from oiltank.config import Settings
 from oiltank.publish.discovery import state_payload
-from oiltank.web.calibration_api import calibration_router
+from oiltank.sources.http import HttpSource
+from oiltank.web.calibration_api import Workspace, calibration_router
 from oiltank.web.control import Control
+from oiltank.web.frames import FrameStore
+from oiltank.web.geometry_api import geometry_router
 from oiltank.web.history_api import history_router
 from oiltank.web.responses import IMMUTABLE, json_response
 from oiltank.web.schemas import ArchiveInfo, Status
@@ -87,15 +90,16 @@ def create_app(control: Control, settings: Settings, *, read_only: bool) -> Fast
             )
         return JSONResponse({"detail": "reading"}, 202)
 
-    app.include_router(
-        calibration_router(settings, control, settings.data_dir / "oiltank.db", read_only=read_only)
+    history = settings.data_dir / "oiltank.db"
+    archive_reader = ArchiveReader(settings.data_dir / "archive")
+    camera = settings.camera
+    frames = FrameStore(
+        archive_reader,
+        control.calibration_file(),
+        (lambda: HttpSource.from_settings(camera)) if camera.url else None,
     )
-    app.include_router(
-        history_router(
-            settings,
-            control,
-            ArchiveReader(settings.data_dir / "archive"),
-            settings.data_dir / "oiltank.db",
-        )
-    )
+    workspace = Workspace(settings, control, history)
+    app.include_router(calibration_router(workspace, frames, read_only=read_only))
+    app.include_router(geometry_router(workspace, frames, archive_reader))
+    app.include_router(history_router(settings, control, archive_reader, history))
     return app

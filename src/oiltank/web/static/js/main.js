@@ -47,6 +47,8 @@ function show() {
       onState: (s) => {
         const hash = formatHash({ view: "history", ...s });
         if (hash !== window.location.hash) window.history.replaceState(null, "", hash);
+        // Coming back to History from another view returns to the same place.
+        document.querySelector('.tabs a[data-view="history"]').setAttribute("href", hash);
       },
     });
   }

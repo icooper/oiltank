@@ -20,12 +20,14 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from oiltank.calibration import Calibration, CalibrationError, calibration_etag
+from oiltank.calibration import Calibration, CalibrationError, calibration_etag, save_reference
 from oiltank.epochs import AxisEpoch, successor
 from oiltank.events import Event, EventKind
+from oiltank.geometry import Aligner
 from oiltank.history import History
 from oiltank.model import LevelState
 from oiltank.service import HEALTHY_AGE_S, CalibrationConflictError, Service
+from oiltank.sources.files import FrameDecodeError
 from oiltank.web.schemas import ServiceInfo
 
 log = logging.getLogger(__name__)
@@ -66,9 +68,17 @@ class Control(Protocol):
         ...
 
     def calibration_file(self) -> CalibrationFile: ...
-    def save_calibration(self, calibration: Calibration, *, if_match: str, read_now: bool) -> str:
-        """Save ``calibration`` and use it. Returns the file's new tag. Raises
-        CalibrationConflictError if the file isn't the one ``if_match`` names any more."""
+    def save_calibration(
+        self,
+        calibration: Calibration,
+        *,
+        if_match: str,
+        read_now: bool,
+        reference: bytes | None = None,
+    ) -> str:
+        """Save ``calibration`` (with ``reference`` as its new reference frame) and use it.
+        Returns the file's new tag. Raises CalibrationConflictError if the file isn't the one
+        ``if_match`` names any more, and CalibrationError if it can't be used."""
         ...
 
     def service_info(self) -> ServiceInfo: ...
@@ -93,9 +103,18 @@ class ServiceControl:
     def calibration_file(self) -> CalibrationFile:
         return self._file
 
-    def save_calibration(self, calibration: Calibration, *, if_match: str, read_now: bool) -> str:
+    def save_calibration(
+        self,
+        calibration: Calibration,
+        *,
+        if_match: str,
+        read_now: bool,
+        reference: bytes | None = None,
+    ) -> str:
         """Through the service's own thread, which saves it, switches to it and republishes."""
-        snap = self._service.call(lambda s: s.apply_calibration(calibration, if_match=if_match))
+        snap = self._service.call(
+            lambda s: s.apply_calibration(calibration, if_match=if_match, reference=reference)
+        )
         if read_now:
             self.read_now()
         return snap.calibration_etag
@@ -134,12 +153,28 @@ class FileControl:
     def calibration_file(self) -> CalibrationFile:
         return self._file
 
-    def save_calibration(self, calibration: Calibration, *, if_match: str, read_now: bool) -> str:
+    def save_calibration(
+        self,
+        calibration: Calibration,
+        *,
+        if_match: str,
+        read_now: bool,
+        reference: bytes | None = None,
+    ) -> str:
         """Straight to the file; a service running elsewhere picks it up at its next reading."""
         path = self._file.path
         current = calibration_etag(path)
         if current != if_match:
             raise CalibrationConflictError(current)
+        if reference is not None:
+            try:
+                save_reference(path.parent, calibration.reference_image, reference)
+            except OSError as e:
+                raise CalibrationError(f"cannot write the reference frame: {e}") from e
+        try:
+            Aligner(calibration.anchor, calibration.anchor_patch)  # the reference must be usable
+        except (OSError, FrameDecodeError) as e:
+            raise CalibrationError(f"cannot use the reference frame: {e}") from e
         calibration.save(path)
         return calibration_etag(path)
 
