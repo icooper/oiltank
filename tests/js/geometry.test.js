@@ -82,13 +82,17 @@ test("dragging handles", () => {
   assert.equal(drag(geometry, "nothing", [1, 1]), geometry);
 });
 
-import { onAxis } from "../../src/oiltank/web/static/js/geometry.js";
+import { alongAxis, onAxis } from "../../src/oiltank/web/static/js/geometry.js";
 
-test("projecting onto the axis", () => {
+test("projecting onto the axis, and back", () => {
   const axis = { top: [2166, 1020], bottom: [2166, 1172] };
   const { t, at } = onAxis(axis, [2180, 1096]);
   assert.equal(t, 0.5);
   assert.deepEqual(at, [2166, 1096]);
   assert.equal(onAxis(axis, [2166, 1172]).t, 0);
   assert.ok(onAxis(axis, [2166, 1000]).t > 1);
+  assert.deepEqual(alongAxis(axis, 0.5), [2166, 1096]);
+  assert.deepEqual(alongAxis(axis, 1.25), [2166, 982]); // past the top, as F can be
+  const tilted = { top: [2200, 1020], bottom: [2160, 1172] };
+  assert.ok(Math.abs(onAxis(tilted, alongAxis(tilted, 0.37)).t - 0.37) < 1e-12);
 });

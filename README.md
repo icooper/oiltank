@@ -301,9 +301,17 @@ The service can also serve a web page. It has two views:
   - On a frame you choose (the reference, a recent full frame, or one grabbed from the camera
     now), drag the axis ends, the strip's width and the anchor, or type the numbers.
   - Each change is checked straight away: what the reader makes of that frame, whether the
-    anchor can still find camera shifts, and any warnings. Beside the frame is the strip the
+    anchor can still find camera shifts, and any warnings. Below the frame is the strip the
     reader gets with your settings, where it put the disc, and its score for every row, as in
     the History inspector.
+  - **F and E:** drag the tabs left of the F and E marks along the axis, or type their positions
+    under **Numbers**, to set where the gauge reads full and empty. Each becomes a calibration
+    point (see [Points](#points-the-scale)); moving one also pins the other where it was, so the
+    rest of the scale stays put. **Numbers** shows where each is, along the axis (in the same
+    units as the reading's position) and in frame pixels, and what puts it there: a point, the
+    end of travel, or the scale through the two nearest points, extended. The reading only
+    changes between the points either side of the disc, so with a point at the disc, moving F
+    or E doesn't change that frame's reading.
   - **Changes are only a try-out until you press Save.** Pick other frames to test them on:
     the saved calibration's reading is shown beside yours, and its geometry is drawn faintly
     under your changes. **Back to saved** undoes them.

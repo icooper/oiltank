@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { amount, NONE, percent, reason, relative, size } from "../../src/oiltank/web/static/js/format.js";
+import { amount, endText, NONE, percent, reason, relative, size } from "../../src/oiltank/web/static/js/format.js";
 
 test("percent and amount", () => {
   assert.equal(percent(98), "98.0%");
@@ -36,4 +36,21 @@ test("sizes use powers of 1024", () => {
 test("problem reasons in words", () => {
   assert.equal(reason("camera_unreachable"), "camera unreachable");
   assert.equal(reason(null), "");
+});
+
+test("where F and E are, and what puts them there", () => {
+  assert.equal(endText({ label: "F", at: [2166, 1005], t: 1.0987, source: "point" }), "F is at 2166, 1005 px: a calibration point.");
+  assert.equal(
+    endText({ label: "E", at: [2166, 1172], t: 0, source: "travel" }),
+    "E is at 2166, 1172 px: the bottom of travel, as no point sets E.",
+  );
+  assert.equal(
+    endText({ label: "F", at: [2166, 1044.96], t: 0.8355, source: "scale", through: ["E", "98%"] }),
+    "F is at 2166, 1045 px: where the scale through E and the 98% point reaches 100%.",
+  );
+  assert.equal(
+    endText({ label: "E", at: [2166.04, 1190.31], t: -0.12, source: "scale", through: ["25%", "98%"] }),
+    "E is at 2166, 1190.3 px: where the scale through the 25% point and the 98% point reaches 0%.",
+  );
+  assert.equal(endText({ label: "F", at: [2166, 1012] }), "F is at 2166, 1012 px."); // being dragged
 });

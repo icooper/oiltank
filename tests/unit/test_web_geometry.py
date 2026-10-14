@@ -137,6 +137,35 @@ def test_checking_on_a_bumped_frame(client: TestClient) -> None:
     assert body["reading"]["level"] == pytest.approx(98, abs=1)  # the anchor took up the bump
 
 
+def test_where_full_and_empty_are(client: TestClient) -> None:
+    def ends(points: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        draft = {**draft_of(saved(client)), "points": points}
+        body = client.post("/api/calibration/check", json=draft).json()
+        return {m["label"]: m for m in body["marks"]}
+
+    owners = saved(client)["points"]
+    t98 = saved(client)["positions"][0]
+    # The owner's one point: E is the bottom of travel, and F is where the line from E through
+    # 98% reaches 100%, just above the disc.
+    marks = ends(owners)
+    assert marks["E"] == {"label": "E", "at": [2166, 1172], "t": 0, "source": "travel"}
+    f = marks["F"]
+    assert (f["source"], f["through"]) == ("scale", ["E", "98%"])
+    assert f["t"] == pytest.approx(t98 / 0.98, abs=1e-4)
+    assert f["at"][1] == pytest.approx(1045, abs=1)
+    assert marks["98%"]["t"] == pytest.approx(t98, abs=1e-4)
+    # Points at E and F set them.
+    marks = ends([{"t": 0.1, "fraction": 0.0}, *owners, {"t": 1.05, "fraction": 1.0}])
+    assert {k: (marks[k]["t"], marks[k]["source"]) for k in "EF"} == {
+        "E": (0.1, "point"),
+        "F": (1.05, "point"),
+    }
+    # Two points in between: both ends extend the scale through them.
+    marks = ends([{"t": 0.4, "fraction": 0.5}, *owners])
+    assert marks["E"]["through"] == marks["F"]["through"] == ["50%", "98%"]
+    assert marks["E"]["t"] == pytest.approx(0.4 - 0.5 * (t98 - 0.4) / 0.48, abs=1e-4)
+
+
 def test_a_draft_that_isnt_a_calibration(client: TestClient) -> None:
     draft = draft_of(saved(client))
     draft["axis"]["bottom"] = draft["axis"]["top"]

@@ -191,12 +191,17 @@ export function drag(start, id, delta) {
   return { ...start, axis, anchor };
 }
 
-/** The point on `axis` nearest `p`, and its `t` (0 at the bottom of travel, 1 at the top):
- * mirrors `Axis.t_of` and `Axis.point`. */
+/** The point at `t` along `axis` (0 at the bottom of travel, 1 at the top): `Axis.point`. */
+export function alongAxis(axis, t) {
+  const [bx, by] = axis.bottom;
+  return [bx + (axis.top[0] - bx) * t, by + (axis.top[1] - by) * t];
+}
+
+/** The point on `axis` nearest `p`, and its `t`: mirrors `Axis.t_of` and `Axis.point`. */
 export function onAxis(axis, p) {
   const [bx, by] = axis.bottom;
   const dx = axis.top[0] - bx;
   const dy = axis.top[1] - by;
   const t = ((p[0] - bx) * dx + (p[1] - by) * dy) / (dx * dx + dy * dy || 1);
-  return { t, at: [bx + dx * t, by + dy * t] };
+  return { t, at: alongAxis(axis, t) };
 }

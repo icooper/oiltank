@@ -388,6 +388,8 @@ body.embedded .point-form, body.embedded .draft-bar { display: none; }
 .g-form fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .g-form legend { font-size: 0.8rem; color: var(--muted); margin-bottom: 2px; }
 .g-form input { width: 5.6em; }
+.g-ends { font-size: 0.8rem; }
+.g-ends p { margin: 0 0 2px; }
 #g-heatmap { display: block; margin: 8px 0; cursor: pointer; }
 .g-rebase { border-top: 1px solid var(--border); padding-top: 8px; }
 .g-rebase h3 { font-size: 0.95rem; margin: 0 0 6px; }

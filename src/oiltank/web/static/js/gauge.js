@@ -5,7 +5,8 @@
 import { getJSON, postJSON } from "./api.js";
 import { colors } from "./canvas.js";
 import { draft, geometryOf, hasEnd, setEnd } from "./draft.js";
-import { reason } from "./format.js";
+import { endText, reason } from "./format.js";
+import { alongAxis, onAxis } from "./geometry.js";
 import { drawHeatmap } from "./heatmap.js";
 import { drawStrip } from "./stripview.js";
 import { Viewer } from "./viewer.js";
@@ -13,6 +14,7 @@ import { Viewer } from "./viewer.js";
 const CHECK_MS = 250;
 const STRIP_SCALE = 1.5; // as in the History inspector
 const REFERENCE = { kind: "reference" };
+const ENDS = [["g-full", "F", 1], ["g-empty", "E", 0]]; // input, mark, reading
 
 const replaced = (list, i, value) => list.map((v, j) => (j === i ? value : v));
 
@@ -76,6 +78,7 @@ export class GaugeView {
     });
     this.viewer.addEventListener("fit", () => this.fit());
     this.viewer.addEventListener("end", (e) => this.moveEnd(e.detail));
+    this.viewer.addEventListener("end-move", (e) => this.showMovingEnd(e.detail));
     this.q("#g-fit").addEventListener("click", () => this.fit());
     this.q("#g-frame").addEventListener("change", (e) => this.select(this.options[Number(e.target.value)].ref));
     this.q("#g-grab").addEventListener("click", () => this.grab());
@@ -88,6 +91,12 @@ export class GaugeView {
       this.q(`#${id}`).addEventListener("change", (e) => {
         const value = Number(e.target.value);
         if (Number.isFinite(value)) draft.setGeometry(change(draft.geometry, value));
+      });
+    }
+    for (const [id, , fraction] of ENDS) {
+      this.q(`#${id}`).addEventListener("change", (e) => {
+        const t = Number(e.target.value);
+        if (e.target.value !== "" && Number.isFinite(t)) this.moveEnd({ fraction, at: alongAxis(draft.geometry.axis, t) });
       });
     }
     draft.addEventListener("change", () => {
@@ -149,6 +158,27 @@ export class GaugeView {
     }
     points = setEnd(points, fraction, at, `${today}: ${name} set in the Gauge tab`);
     draft.set(points);
+  }
+
+  /** Where F and E are along the axis (from a check's `marks`, or none), and what puts them
+   * there. */
+  showEnds(marks) {
+    const out = [];
+    for (const [id, label] of ENDS) {
+      const mark = marks && marks.find((m) => m.label === label);
+      const input = this.q(`#${id}`);
+      if (document.activeElement !== input) input.value = mark ? mark.t.toFixed(3) : "";
+      if (mark) out.push(line(endText(mark)));
+    }
+    this.q("#g-ends").replaceChildren(...out);
+  }
+
+  /** F or E where it's being dragged to, until the drop is checked. */
+  showMovingEnd({ fraction, at }) {
+    const marks = (this.viewer.result && this.viewer.result.marks) || [];
+    const label = fraction === 1 ? "F" : "E";
+    const moving = { label, at, t: onAxis(draft.geometry.axis, at).t };
+    this.showEnds(marks.map((m) => (m.label === label ? moving : m)));
   }
 
   /** Say whether this is the saved calibration or a try-out, and draw the saved geometry faintly
@@ -263,6 +293,7 @@ export class GaugeView {
       ]);
       if (generation !== this.generation) return; // a newer check is on its way
       this.viewer.setResult(result.valid ? result : null);
+      this.showEnds(result.valid ? result.marks : null);
       this.showResult(result, saved);
       this.showStrip(result.valid ? result : null, generation);
     } catch (error) {

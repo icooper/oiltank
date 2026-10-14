@@ -3,8 +3,8 @@
 // camera has shifted, it's drawn moved by that shift so it sits where the gauge is.
 //
 // Events: "drag" while a handle moves and "change" when it's let go (`detail` is the geometry);
-// "end" when the F or E tab is dropped somewhere along the axis (`detail` is `{ fraction, at }`,
-// 1 for F, 0 for E, at in reference px); and "fit" on a double-click.
+// "end-move" while the F or E tab is dragged along the axis and "end" when it's dropped (`detail`
+// is `{ fraction, at }`: 1 for F, 0 for E, at in reference px); and "fit" on a double-click.
 
 import { colors, image, sized } from "./canvas.js";
 import { across, discAngle, drag, handles, hit, mergeLabels, onAxis, stripOutline, View } from "./geometry.js";
@@ -315,6 +315,8 @@ export class Viewer extends EventTarget {
         const [sx, sy] = this.shift;
         this.endDrag = { id: g.id, at: onAxis(this.geometry.axis, [ix - sx, iy - sy]).at };
         this.render();
+        const fraction = g.id === "full" ? 1 : 0;
+        this.dispatchEvent(new CustomEvent("end-move", { detail: { fraction, at: this.endDrag.at } }));
       } else if (g.kind === "handle") {
         const [ix, iy] = this.view.toImage(at);
         this.geometry = drag(g.start, g.id, [ix - g.from[0], iy - g.from[1]]);

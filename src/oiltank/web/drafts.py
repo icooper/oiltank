@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from oiltank.calibrate import check_anchor, scan_disc_sizes, warnings
-from oiltank.calibration import Calibration
+from oiltank.calibration import IMPLICIT_E, IMPLICIT_F, Calibration
 from oiltank.geometry import Aligner
 from oiltank.model import Frame, FrameResult, GrayImage
 from oiltank.pipeline import measure
@@ -30,16 +30,40 @@ def _xy(point: tuple[float, float] | None) -> list[float] | None:
     return None if point is None else [round(point[0], 2), round(point[1], 2)]
 
 
+def _label(fraction: float) -> str:
+    return "E" if fraction == 0.0 else "F" if fraction == 1.0 else f"{100 * fraction:.0f}%"
+
+
+def _end(calibration: Calibration, fraction: float) -> dict[str, Any]:
+    """Where F (``fraction`` 1) or E (0) is, and what puts it there (``source``): a point at that
+    reading; the end of travel, which stands in until there are two points; or the scale through
+    the two points nearest that end, extended (``through`` names them)."""
+    t = calibration.t_for(fraction)
+    mark: dict[str, Any] = {
+        "label": _label(fraction),
+        "at": _xy(calibration.axis.point(t)),
+        "t": _num(t),
+    }
+    scale = calibration.scale_points()
+    if any(p.fraction == fraction for p in calibration.points):
+        mark["source"] = "point"
+    elif (IMPLICIT_F if fraction == 1.0 else IMPLICIT_E) in scale:
+        mark["source"] = "travel"
+    else:
+        nearest = scale[-2:] if fraction == 1.0 else scale[:2]
+        mark |= {"source": "scale", "through": [_label(f) for _, f in nearest]}
+    return mark
+
+
 def marks(calibration: Calibration) -> list[dict[str, Any]]:
-    """Where the gauge's marks are, in reference-frame pixels: F, E and the points."""
+    """Where the gauge's marks are, in reference-frame pixels and along the axis (``t``): F and E
+    (see :func:`_end`), then the points."""
     axis = calibration.axis
-    out = [
-        {"label": "F", "at": _xy(axis.point(calibration.t_for(1.0)))},
-        {"label": "E", "at": _xy(axis.point(calibration.t_for(0.0)))},
-    ]
+    out = [_end(calibration, 1.0), _end(calibration, 0.0)]
     for p in calibration.points:
         if 0.0 < p.fraction < 1.0:
-            out.append({"label": f"{100 * p.fraction:.0f}%", "at": _xy(axis.point(p.t_on(axis)))})
+            t = p.t_on(axis)
+            out.append({"label": _label(p.fraction), "at": _xy(axis.point(t)), "t": _num(t)})
     return out
 
 
