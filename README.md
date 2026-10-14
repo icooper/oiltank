@@ -21,6 +21,8 @@ run the tests or make changes, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [The service](#the-service)
   - [Frame archive](#frame-archive)
   - [Recording a delivery](#recording-a-delivery)
+- [Web UI](#web-ui)
+  - [In Home Assistant](#in-home-assistant)
 - [Configuration](#configuration)
 - [Calibration](#calibration)
   - [Setting up](#setting-up)
@@ -197,7 +199,17 @@ saw. On startup, and whenever `calibration.yaml` changes, the service rebuilds i
 replaying recent readings with the current calibration. So adding a calibration point with
 `oiltank calibrate point` while the service runs also corrects the usage history.
 
-`oiltank history [--days N]` lists recent readings and refills, and what they add up to.
+The stored positions also survive the other calibration changes:
+- **Axis edits** (`oiltank calibrate axis`): each stored position remembers the axis it was
+  measured along and is mapped onto the new one.
+- **Rebases** (`oiltank calibrate rebase`): stored positions are kept as they are, because the
+  disc is still at the same place on the gauge.
+- **Anything else,** such as a new reference frame whose axis doesn't simply follow the camera
+  (`calibrate init --force`): positions can't be mapped. The service logs a warning and keeps
+  them as they are.
+
+`oiltank history [--days N]` lists recent readings and refills, and what they add up to, worked
+out with the current calibration.
 
 `oiltank healthcheck` (the container's healthcheck) checks that the service's loop has written its
 heartbeat file in the last two minutes. The service stops cleanly on SIGTERM (`docker compose
@@ -218,8 +230,8 @@ parts:
   `OILTANK_ARCHIVE_FULL_FRAME_HOURS` (6) and for every problem reading.
 
 That's about 3.3 MB a day at the default settings: a 21 KB strip per reading and four full frames.
-The oldest records are deleted beyond `OILTANK_ARCHIVE_MAX_MB` (2000), which lasts about 20
-months. Archived frames can be read again with any calibration, which
+Beyond `OILTANK_ARCHIVE_MAX_MB` (2000), whole records are deleted, oldest first, until the
+archive is back under 95% of the limit. That's about 20 months. Archived frames can be read again with any calibration, which
 makes them useful for checking a calibration change against past readings:
 `oiltank read --image data/archive/2026-10-13/035920Z-frame.jpg`.
 
@@ -251,6 +263,162 @@ oiltank calibrate point --fraction 0.93 --note "delivery: 172 gal on the ticket"
   --image /data/captures/20261020-141500Z/2026-10-20/143010Z-frame.jpg
 ```
 
+## Web UI
+
+The service can also serve a web page. It has two views:
+
+- **Now:** the level as Home Assistant sees it, the latest gauge image, the service's state and
+  a **Read now** button.
+- **History:** every reading on a timeline, to scrub through and watch the indicator move.
+  - The level chart shows each reading and the filtered level, with refills and problems marked.
+    Faint dots are low-confidence readings; hollow ones were rejected.
+  - Under it, on the same time axis, each archived reading's strip is a column, so the disc reads
+    as a band sliding down the gauge, with a step up at each refill. A misread shows as a blue dot
+    off the band. The dashed lines are the gauge's marks (E, F and your calibration points).
+  - Below that, the reading under the cursor is shown three ways:
+    - its strip, with where the reader put the disc and the reader's score for every row;
+    - the nearest full frame, with the disc outlined;
+    - its details: confidence, problem, camera shift.
+
+  To move around the History view:
+  - Drag across the chart to scrub, or tap on a phone.
+  - **←**/**→** step one reading; **Shift** steps a day.
+  - **Space** plays it as a timelapse.
+  - **[**/**]** jump to the previous or next problem, rejected reading or refill.
+  - Scroll or pinch to zoom.
+  - The address bar keeps the view and the reading, so a link opens the same place.
+
+  Levels are always worked out with the current calibration, so after you recalibrate, the
+  whole history shows the new levels.
+- **Calibration:** the calibration points (see [Points](#points-the-scale)). Change or remove
+  them here, or add them two ways:
+  - **From a reading:** stop on a reading in History where you know what the gauge showed, say
+    from a dipstick or a look at the gauge, and use **This reading was … %**.
+  - **From a delivery:** pick a refill and enter the amount on its ticket. The level before the
+    refill plus the delivered amount is what the gauge should have read after it.
+
+- **Gauge:** where the gauge is in the frame, the same things `oiltank calibrate` sets up.
+  - On a frame you choose (the reference, a recent full frame, or one grabbed from the camera
+    now), drag the axis ends, the strip's width and the anchor, or type the numbers.
+  - Each change is checked straight away: what the reader makes of that frame, whether the
+    anchor can still find camera shifts, and any warnings. Below the frame is the strip the
+    reader gets with your settings, where it put the disc, and its score for every row, as in
+    the History inspector.
+  - **F and E:** drag the tabs left of the F and E marks along the axis, or type their positions
+    under **Numbers**, to set where the gauge reads full and empty. Each becomes a calibration
+    point (see [Points](#points-the-scale)); moving one also pins the other where it was, so the
+    rest of the scale stays put. **Numbers** shows where each is, along the axis (in the same
+    units as the reading's position) and in frame pixels, and what puts it there: a point, the
+    end of travel, or the scale through the two nearest points, extended. The reading only
+    changes between the points either side of the disc, so with a point at the disc, moving F
+    or E doesn't change that frame's reading.
+  - **Changes are only a try-out until you press Save.** Pick other frames to test them on:
+    the saved calibration's reading is shown beside yours, and its geometry is drawn faintly
+    under your changes. **Back to saved** undoes them.
+  - **Disc size** scans sizes around yours and shows which read the disc in the same place.
+    Click one to use it.
+  - **After the camera has moved,** pick a frame from after the move and use **Find the
+    camera's shift**, then **Make this frame the reference**. This is `oiltank calibrate
+    rebase`. Unlike other changes, it's saved straight away, and on its own, so your readings
+    keep their places.
+
+  Changes stay a draft, with a preview of the last 30 days, until you **Save**. The service then
+  uses them at once: it replays the history with them, updates Home Assistant and, if you tick
+  the box, takes a reading. If the calibration file changed in the meantime, for example through
+  `oiltank calibrate`, the save is refused rather than overwriting it.
+
+It's off until you give it a port in `.env`:
+
+```sh
+OILTANK_WEB_PORT=8780
+```
+
+Then publish the port by uncommenting `ports:` in `docker-compose.yml`, and open
+`http://<docker host>:8780/`.
+
+**It has no login.** Anyone who can reach the port can use it. Keep it on your home network or a
+private one such as Tailscale, and never forward it from the internet. To narrow it further:
+
+- **Names:** it only answers to the names a browser uses on a private network. Those are IP
+  addresses, `localhost`, single-label names, and names ending in `.local`, `.lan`, `.home.arpa`
+  or `.internal`. If you reach it by any other name, such as through a reverse proxy, set
+  `OILTANK_WEB_URL` to that address.
+- **Changes:** it only accepts them from its own pages.
+- **Browse only:** `OILTANK_WEB_READ_ONLY=true` makes it refuse calibration changes.
+
+`oiltank web` serves the same page without the service, for looking at a data directory from
+elsewhere (a copy is fine, even one from an older version). Read now isn't available there.
+
+```sh
+docker compose run --rm -p 8780:8780 oiltank web --host 0.0.0.0
+uv run oiltank web    # from a checkout: http://127.0.0.1:8780/
+```
+
+### In Home Assistant
+
+Home Assistant's **Webpage** card shows the web UI on a dashboard. A **Webpage** dashboard puts
+it in the sidebar.
+
+Your browser loads the page itself, not Home Assistant, so the UI has to be reachable from
+wherever you use Home Assistant. If Home Assistant is served over HTTPS, the UI must be too:
+browsers won't show an `http://` page inside an `https://` one. A reverse proxy that already
+serves Home Assistant can serve the UI as well.
+
+With Caddy, give the UI a name of its own:
+
+```caddyfile
+oiltank.example.com {
+    reverse_proxy docker-host:8780
+}
+```
+
+```sh
+# .env
+OILTANK_WEB_PORT=8780
+OILTANK_WEB_URL=https://oiltank.example.com/
+OILTANK_WEB_EMBED_ORIGINS=https://ha.example.com
+```
+
+- `OILTANK_WEB_EMBED_ORIGINS` lets Home Assistant's pages show the UI in a frame.
+- `OILTANK_WEB_URL` makes the name trusted, and adds a **Visit** link to the device's page in
+  Home Assistant.
+
+Then add the card:
+
+```yaml
+type: iframe
+url: https://oiltank.example.com/?embed=card
+aspect_ratio: 100%
+```
+
+`?embed=card` shows a compact History view without the page's header and controls. Leave it off
+for the whole UI, for example in a Webpage dashboard. `&theme=dark` or `&theme=light` sets the
+theme. Otherwise it follows the device, not Home Assistant's theme.
+
+<details>
+<summary>Under Home Assistant's own name instead</summary>
+
+A path on Home Assistant's name works too:
+
+```caddyfile
+ha.example.com {
+    redir /oiltank-ui /oiltank-ui/
+    handle_path /oiltank-ui/* {
+        reverse_proxy docker-host:8780
+    }
+    reverse_proxy homeassistant:8123
+}
+```
+
+Set `OILTANK_WEB_URL=https://ha.example.com/oiltank-ui/` and leave out
+`OILTANK_WEB_EMBED_ORIGINS`. Choose a path Home Assistant doesn't use.
+
+This shares Home Assistant's origin, which is why a name of its own is better. Home Assistant
+keeps your login in the browser's storage for its origin, so script on the UI's pages could read
+it. A bug in the UI would then expose all of Home Assistant.
+
+</details>
+
 ## Configuration
 
 All settings come from environment variables named `OILTANK_<SECTION>_<KEY>`, normally kept in
@@ -281,6 +449,9 @@ means "not set". An `OILTANK_` name that matches no setting is an error, which c
 | `OILTANK_SERVICE_USAGE_WINDOW_DAYS`, `_USAGE_MIN_HOURS`, `_USAGE_MIN_POINTS` | 7, 24, 12 | Usage-rate trend window, and how much data it needs. |
 | `OILTANK_ARCHIVE_ENABLED`, `_MAX_MB` | true, 2000 | The [frame archive](#frame-archive), and its size limit. |
 | `OILTANK_ARCHIVE_FULL_FRAME_HOURS`, `_PROBLEM_FRAMES` | 6, true | How often to keep a full frame (0: only for problems), and whether to keep problem readings' frames. |
+| `OILTANK_WEB_PORT`, `_HOST` | 0, 0.0.0.0 | The [web UI](#web-ui) (0: off), and the address it listens on. |
+| `OILTANK_WEB_URL`, `_READ_ONLY` | none, false | Where browsers reach the web UI, if not by IP address or a local name; and whether it refuses calibration changes. |
+| `OILTANK_WEB_EMBED_ORIGINS` | | Sites allowed to show the web UI in a frame (space-separated origins, e.g. `https://ha.example.com`). |
 | `OILTANK_DATA_DIR` | data | Calibration, history and archive. Relative to the working directory, which is `/` in the container, so `data` means `./data` from a checkout and `/data` (the same directory, mounted) in the container. |
 | `OILTANK_LOG_LEVEL` | INFO | DEBUG, INFO, WARNING or ERROR. `oiltank -v` logs at DEBUG. |
 | `TZ` | | The container's timezone, used for timestamps on the gauge image. |
@@ -425,7 +596,8 @@ gauge reading (`fraction`: 0 = E, 1 = F). Defaults fill in until there are two p
 
 Between points the mapping is linear, and past the outermost points the end segments are
 extended. Points must increase in both position and reading. `calibrate point` replaces a point
-with the same reading, and `calibrate point --fraction F --remove` deletes one.
+with the same reading, and `calibrate point --fraction F --remove` deletes one. The
+[web UI](#web-ui)'s Calibration view does the same.
 
 The sample calibration shows why the defaults are only a starting point. The frames were taken a
 week after a fill, with the tank at about 98%, yet the disc sat well below the top of the dome.
@@ -710,7 +882,8 @@ running locked down on the sample frames, before it's published.
 - nothing from the checkout gets into the image except the code and its lock file
   (`.dockerignore` is an allowlist). Settings and credentials come from `.env` at run time, and
   credentials are never logged;
-- it only makes outbound connections, to go2rtc and the MQTT broker. It listens on no ports.
+- it only makes outbound connections, to go2rtc and the MQTT broker. It listens on no ports
+  unless you turn on the [web UI](#web-ui), which has no login, so keep that port private.
 
 ## License
 

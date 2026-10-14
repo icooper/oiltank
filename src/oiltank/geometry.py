@@ -71,6 +71,29 @@ def rectify(
     ``axis.half_width`` px either side of the axis. ``t`` is 1.0 at the top of travel and 0.0 at
     the bottom.
     """
+    empty = np.zeros((rows, cols), dtype=np.uint8)
+    strip = strip_for(empty, axis, alignment)
+    pixels = cv2.warpAffine(
+        gray,
+        strip.to_frame,
+        (cols, rows),
+        flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    return GaugeStrip(
+        pixels=np.asarray(pixels, dtype=np.uint8),
+        t_of_row=strip.t_of_row,
+        to_frame=strip.to_frame,
+        px_per_row=strip.px_per_row,
+        px_per_col=strip.px_per_col,
+    )
+
+
+def strip_for(pixels: GrayImage, axis: Axis, alignment: Alignment | None = None) -> GaugeStrip:
+    """``pixels`` (already rectified, e.g. an archived strip) with the geometry :func:`rectify`
+    gives a strip of their size along ``axis``: which ``t`` each row is, and where it is in the
+    frame."""
+    rows, cols = pixels.shape
     offset = np.array([alignment.dx, alignment.dy] if alignment else [0.0, 0.0])
     top = np.array(axis.top, dtype=np.float64) + offset
     bottom = np.array(axis.bottom, dtype=np.float64) + offset
@@ -90,17 +113,10 @@ def rectify(
     b = start + 0.5 * px_per_row * u + (0.5 * px_per_col - axis.half_width) * n
     to_frame = np.hstack([a, b[:, None]])
 
-    pixels = cv2.warpAffine(
-        gray,
-        to_frame,
-        (cols, rows),
-        flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
-        borderMode=cv2.BORDER_REPLICATE,
-    )
     dist_from_top = (np.arange(rows, dtype=np.float64) + 0.5) * px_per_row - axis.margin * length
     t_of_row = (1.0 - dist_from_top / length).astype(np.float32)
     return GaugeStrip(
-        pixels=np.asarray(pixels, dtype=np.uint8),
+        pixels=pixels,
         t_of_row=t_of_row,
         to_frame=to_frame,
         px_per_row=float(px_per_row),

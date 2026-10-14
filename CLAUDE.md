@@ -37,6 +37,8 @@ uv run oiltank read -c samples/calibration.yaml   # live camera, configured in .
 uv run oiltank grab --out frame.jpg               # one frame, exactly as go2rtc sends it
 uv run oiltank run                       # the service (needs data/calibration.yaml and MQTT)
 uv run oiltank history / healthcheck / capture --every 10s --duration 1m
+uv run oiltank web                       # the web UI alone, on http://127.0.0.1:8780/
+node --test "tests/js/*.test.js"         # web UI JS tests alone; Node per .nvmrc (pytest runs them)
 uv add <pkg> / uv add --dev <pkg>        # dependencies; commit uv.lock alongside pyproject.toml
 docker build -t oiltank:dev .            # distroless runtime image (docker-compose.yml for deploys)
 docker run --rm -v "$PWD/samples:/samples:ro" oiltank:dev read -c /samples/calibration.yaml --image /samples/frame0.jpg
@@ -100,19 +102,81 @@ flowchart LR
   median smoothing, confirmed refills, the Theil-Sen usage rate and days left. It's a function of
   the readings alone, so `service.py` rebuilds it on start and after a calibration change by
   replaying `history.py` (SQLite `data/oiltank.db`), with fractions recomputed from the stored `t`.
+- `history.py` runs in WAL mode. Only the service writes it; anything else (the web UI) uses
+  `History.open_readonly`, a connection per request.
+- `epochs.py` (pure): a stored `t` is relative to the axis it was measured along. History tags
+  each reading with an epoch (one per axis), and the service registers the current one whenever
+  it loads a calibration. **Read stored `t` with `observations(..., onto=epoch)`**:
+  - an axis edit projects onto the new axis;
+  - a rebase (new reference, axis translated with the camera) leaves `t` alone;
+  - anything else carries `t` unchanged and logs a warning.
 - `archive.py`: one record per reading under `data/archive/<UTC date>/`. A record is the JSON
   (reading, alignment, strip row ↔ t labels), the strip PNG, and sometimes the full frame's
-  original bytes. The full-frame schedule is independent of problem frames. Oldest files go first
-  beyond the size cap. `oiltank capture` writes the same format to `data/captures/` with no cap.
-- `service.py`: one thread. It waits on the event queue (`READ_NOW`, `HA_ONLINE`, `CONNECTED`,
-  `STOP`) or the next interval, then runs a cycle: grab → measure → filter → store → publish. It
-  writes `data/heartbeat` at least every 30 s for `oiltank healthcheck`. `cli/service.py` installs
-  SIGTERM/SIGINT handlers: as PID 1 in a container, Python ignores SIGTERM without one.
+  original bytes. The full-frame schedule is independent of problem frames. The JSON is written
+  last and atomically, and beyond the size cap whole records go oldest first (JSON first, down to
+  `EVICT_TO`). So a record whose JSON exists has all its files. `oiltank capture` writes the same
+  format to `data/captures/` with no cap.
+  - `ArchiveReader` reads records back, tolerant of older and partial ones.
+  - **It serves files only through `path()`**, which checks names against strict patterns.
+  - `ArchiveRecord.strip()` rebuilds a strip's geometry (`geometry.strip_for`), so the reader can
+    re-read it.
+- `service.py`: one thread. It waits on the event queue (`events.py`: `READ_NOW`, `HA_ONLINE`,
+  `CONNECTED`, `STOP`, `CALL`) or the next interval, then runs a cycle: grab → measure → filter →
+  store → publish. It writes `data/heartbeat` at least every 30 s for `oiltank healthcheck`.
+  `cli/service.py` installs SIGTERM/SIGINT handlers: as PID 1 in a container, Python ignores
+  SIGTERM without one.
+  - **Other threads never change the service's state.** They read `Service.snapshot`, a frozen
+    `Snapshot` that is replaced whole.
+  - Changes go through `Service.call(fn)`, which runs `fn` on the service thread between
+    readings. A call that times out never runs.
+  - `apply_calibration` saves a calibration (refusing a stale ETag), reloads it, replays history
+    and publishes.
 - `publish/mqtt.py`: paho-mqtt 2.x. `MqttLink` sets a last will (`offline`). On every (re)connect
   it subscribes and announces `online` and discovery. **CV never runs in paho callbacks**:
-  callbacks do only cheap MQTT work and put `Event`s (`READ_NOW`, `HA_ONLINE`, `CONNECTED`) on a
-  queue that the main loop handles (`service.py`, or `cli/mqtt.py` for publishing by hand).
+  callbacks do only cheap MQTT work and put `Event`s (`events.py`: `READ_NOW`, `HA_ONLINE`,
+  `CONNECTED`) on a queue that the main loop handles (`service.py`, or `cli/mqtt.py` for
+  publishing by hand).
 - `model.py`: the typed, frozen dataclasses passed between stages.
+- `web/`: the web UI, served by `oiltank run` on a thread of its own when `OILTANK_WEB_PORT` is
+  set, or alone by `oiltank web` (`cli/web.py`).
+  - **It reads the service through `ServiceControl`** (the snapshot) and **never changes service
+    state from its own threads**. `FileControl` is the standalone version.
+  - **No login, so `security.py` checks every request:**
+    - private host names only, plus `OILTANK_WEB_URL`'s;
+    - changes must be JSON, from the page's own origin;
+    - a CSP whose `frame-ancestors` comes from `OILTANK_WEB_EMBED_ORIGINS`.
+  - **The pages** are plain ES modules in `web/static/`, with no build step and **no Node in the
+    image**.
+    - **Every URL must be relative**, for path prefixes and proxies (a test checks).
+    - Static files are served under a content hash and cached for good.
+    - Pure modules are tested with `node --test` (`tests/js/`).
+    - **Anything they work out that the server also works out** (tile rows ↔ `t`, strip rows,
+      the disc angle) is checked against `tests/data/js-vectors.json`, which Python writes.
+  - **History view** (`history_api.py`, with pure `timeline.py` and `kymograph.py`):
+    - Levels are recomputed with the current calibration from `t` carried onto the current
+      epoch, and the filter is replayed from before the range.
+    - Archive records are joined to history rows by timestamp, which gives a record its epoch.
+    - Gauge-over-time tiles are one PNG per UTC day, cached in memory under a version naming
+      their inputs. The client fetches them with `?v=<version>`, which makes them immutable.
+  - **Calibration editing** (`calibration_api.py`):
+    - The browser keeps a draft of the points (`draft.js`). The server turns readings and
+      deliveries into points with `calibrate.with_point`, previews the draft, and saves it.
+    - **The calibration file is what's edited.** `CalibrationFile` loads it with its tag, and a
+      save needs `If-Match`: a stale one gets 412 rather than overwriting an `oiltank calibrate`
+      edit.
+    - In `oiltank run`, saves go through `Service.call` → `apply_calibration`, so the service
+      switches at once.
+  - **Geometry editing** (`geometry_api.py`, `frames.py`, `drafts.py`):
+    - `FrameStore` decodes and keeps a few frames: the reference, archived full frames, and
+      camera grabs, for 30 minutes.
+    - `drafts.evaluate` runs the reader, the anchor self-test and the warnings for a draft's
+      geometry, with the anchor cut from the reference frame in memory. A draft that isn't a
+      calibration comes back as `valid: false`, not as a 422.
+    - A rebase saves a new reference frame with the geometry moved by the anchor's shift. **The
+      save refuses a rebase combined with an axis edit:** that would be a `NEW_REFERENCE` epoch,
+      which can't carry stored readings.
+    - The Node version is `.nvmrc`'s (`nvm use` locally; `setup-node` with `node-version-file`
+      in workflows). Node is the one tool not run through uv.
 
 ## CI and releases
 

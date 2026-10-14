@@ -63,6 +63,9 @@ def test_secrets_are_masked(monkeypatch: pytest.MonkeyPatch) -> None:
         ("OILTANK_CAMERA_URL", "http://u:p@go2rtc/api/frame.jpeg", "not in the URL"),
         ("OILTANK_CAMERA_BURST_FRAMES", "0", "OILTANK_CAMERA_BURST_FRAMES"),
         ("OILTANK_DEVICE_ID", "Oil Tank", "OILTANK_DEVICE_ID"),
+        ("OILTANK_WEB_PORT", "70000", "OILTANK_WEB_PORT"),
+        ("OILTANK_WEB_URL", "oiltank.lan", "must be an http"),
+        ("OILTANK_WEB_EMBED_ORIGINS", "https://ha.lan https://ha.lan/lovelace", "isn't an origin"),
     ],
 )
 def test_invalid_settings_name_the_variable(

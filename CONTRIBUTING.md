@@ -27,6 +27,9 @@ uv run mypy                                   # strict type checking
 uv run oiltank --help
 ```
 
+The web UI's JavaScript tests also need [Node](https://nodejs.org/), at the version in `.nvmrc`
+(`nvm use`). It's only for tests; the pages have no build step.
+
 ## Running from a checkout
 
 `uv run oiltank ...` reads `.env` and uses `./data`, the same directory the container mounts at
@@ -45,6 +48,23 @@ uv run oiltank calibrate show \
   --diagnostic check.jpg
 ```
 
+`uv run oiltank web` serves the web UI on http://127.0.0.1:8780/ without the service.
+
+The pages are plain ES modules in `src/oiltank/web/static/`, with no build step. Edit them and
+reload.
+
+- **Relative URLs:** every URL the pages use must be relative (`api/status`, not
+  `/api/status`), so that the UI also works under a path prefix. A test checks this.
+- **Pure modules:** keep logic that can be tested without a browser in modules that don't touch
+  the DOM, and test those in `tests/js/`. These are `format.js`, `timescale.js` (the shared time
+  axis and its ticks), `series.js` (stepping and jumping through readings), `store.js` (the URL
+  hash), `geometry.js` (also the geometry editor's view, handles and dragging) and `draft.js`
+  (the calibration draft).
+- **Drawing and view modules** (`chart.js`, `strips.js`, `inspector.js`, `history.js`,
+  `calibration.js`, `viewer.js`, `heatmap.js`, `gauge.js`) aren't run by the
+  tests. Check them in a browser. A data directory with some history makes that easier. Any
+  error in the page shows in a banner at the top.
+
 ## Code layout
 
 The code is in `src/oiltank/`:
@@ -55,10 +75,12 @@ The code is in `src/oiltank/`:
 | `geometry.py`, `readers/`, `pipeline.py` | Align, rectify and read a burst; pure |
 | `calibration.py`, `calibrate.py` | The calibration model, and the tools behind `oiltank calibrate` |
 | `filter.py`, `history.py`, `archive.py` | Filtering and derived values (pure), SQLite history, the frame archive |
+| `epochs.py` | Which axis a stored gauge position was measured along, and mapping it onto the current one (pure) |
 | `publish/` | Home Assistant discovery and state (pure), and the MQTT connection |
-| `service.py` | The service loop |
+| `service.py`, `events.py` | The service loop, the events that wake it, and calls into it from other threads |
 | `annotate.py` | The gauge, diagnostic and grid images |
 | `config.py`, `model.py`, `cli/` | Settings, shared data types, the command line |
+| `web/` | The web UI: FastAPI routes, request checks, the server thread, and the pages in `web/static/` (plain ES modules, no build step) |
 
 [CLAUDE.md](CLAUDE.md) has the design rules that keep these apart.
 
@@ -85,12 +107,38 @@ with IR only. The disc's centre is at y≈1048 in all of them. The tests cover:
   `tests/data/discovery.json`, and the state payload;
 - `tests/unit/test_filter.py`, `test_history.py` and `test_service.py`: the level filter (smoothing,
   refills, usage, problems), the SQLite history, and the service loop with a scripted camera;
-- `tests/unit/test_archive.py`: archive records and their labels, the full-frame schedule, and the
-  size limit; `test_cli_camera.py` also covers `capture`;
+- `tests/unit/test_epochs.py`: mapping stored gauge positions across axis edits and rebases (the
+  service tests check that the level survives both);
+- `tests/unit/test_archive.py`: archive records and their labels, the full-frame schedule, the
+  size limit, and reading records back (including old, partial and broken ones, and which files
+  may be served); `test_cli_camera.py` also covers `capture`;
+- `tests/unit/test_web.py`: the web UI's server side, covering pages and assets, the status API,
+  the request checks (host names, JSON-only changes, origins, framing), serving under a path
+  prefix, and the server thread;
+- `tests/unit/test_web_history.py`, `test_timeline.py` and `test_kymograph.py`: the History view's
+  API. It runs over a data directory made from the sample frames, with the disc moved down the
+  gauge, and covers recalibrated levels, a day's tile (the disc's band moves the right number of
+  rows), records for the inspector, re-read scores, and which files are served;
+- `tests/unit/test_web_calibration.py`: changing the calibration from the web UI. It covers
+  points from readings and deliveries (and the ones that can't be), the draft's preview, and
+  saving to the file or through the service. A stale `If-Match` is refused, and so is a save
+  from a read-only UI;
+- `tests/unit/test_web_geometry.py`: editing the geometry from the web UI. It covers the frames
+  to edit on, checking a draft on normal and bumped frames, invalid drafts, the disc-size scan,
+  grabbing from a fake camera, and rebasing after a bump. It also checks that a rebase with an
+  axis edit is refused;
+- `tests/unit/test_js_vectors.py`: values the pages must work out exactly as the server does,
+  written to `tests/data/js-vectors.json` (`UPDATE_GOLDEN=1` to rewrite) and checked by
+  `tests/js/geometry.test.js`;
+- `tests/js/*.test.js`: the web UI's pure JavaScript modules, with Node's built-in test runner.
+  `tests/unit/test_js.py` runs them and parses every module, so `uv run pytest` covers them too.
+  They need the Node version in `.nvmrc` (`nvm use`). Without Node they're skipped locally; CI
+  installs it. Node never goes into the image. To run them alone:
+  `node --test "tests/js/*.test.js"`;
 - `tests/integration/test_mqtt.py` and `test_service.py` (`-m integration`, need Docker): a real
   Mosquitto broker, covering retained discovery, state and image, the button and HA-restart
   events, the last will and `clear`. Also `oiltank run` end to end against a fake go2rtc,
-  including the healthcheck and SIGTERM.
+  including the healthcheck, SIGTERM and the web UI.
 
 Tests never read your `.env` or `OILTANK_*` variables: they run in an empty working directory with
 those variables removed.

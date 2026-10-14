@@ -113,6 +113,50 @@ class ArchiveSettings(_Section):
     """Keep the full frame of every reading that has a problem."""
 
 
+class WebSettings(_Section):
+    """The web UI that ``oiltank run`` serves, for browsing readings and managing the calibration.
+
+    It has no login of its own, so keep it on a private network (see README.md).
+    """
+
+    port: Annotated[int, Field(ge=0, le=65535)] = 0
+    """0: no web UI."""
+    host: str = "0.0.0.0"
+    """The address to listen on. In a container, 0.0.0.0 is what a published port reaches."""
+    url: str | None = None
+    """Where browsers reach it (e.g. ``https://oiltank.example.com/``), if not by IP address or a
+    local name. Its host is trusted, and Home Assistant links to it from the device page."""
+    read_only: bool = False
+    """Browse only: refuse calibration changes."""
+    embed_origins: str = ""
+    """Sites allowed to show the UI in a frame (e.g. a Home Assistant dashboard), as
+    space-separated origins such as ``https://ha.example.com``."""
+
+    @field_validator("url")
+    @classmethod
+    def _web_url(cls, url: str | None) -> str | None:
+        if url is not None:
+            parts = urlsplit(url)
+            if parts.scheme not in ("http", "https") or not parts.hostname:
+                raise ValueError("must be an http:// or https:// URL")
+        return url
+
+    @field_validator("embed_origins")
+    @classmethod
+    def _origins(cls, origins: str) -> str:
+        for origin in origins.split():
+            parts = urlsplit(origin)
+            if (
+                parts.scheme not in ("http", "https")
+                or not parts.hostname
+                or parts.path.strip("/")
+                or parts.query
+                or parts.username
+            ):
+                raise ValueError(f"{origin!r} isn't an origin like https://ha.example.com")
+        return origins
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
@@ -135,6 +179,7 @@ class Settings(BaseSettings):
     tank: TankSettings = TankSettings()
     service: ServiceSettings = ServiceSettings()
     archive: ArchiveSettings = ArchiveSettings()
+    web: WebSettings = WebSettings()
 
     @property
     def calibration_path(self) -> Path:

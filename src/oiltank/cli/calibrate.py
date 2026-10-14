@@ -4,8 +4,9 @@ Every command that changes the calibration prints the same report as ``show`` fo
 saves it (keeping the previous file as ``.bak``) unless ``--dry-run`` is given.
 """
 
+import errno
 from collections.abc import Sequence
-from datetime import UTC, date
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -16,6 +17,7 @@ from oiltank.annotate import render_diagnostic, render_grid
 from oiltank.calibrate import (
     DiscScan,
     check_anchor,
+    dated_note,
     default_anchor,
     default_disc,
     default_half_width,
@@ -33,6 +35,8 @@ from oiltank.calibration import (
     CalibrationError,
     CalibrationPoint,
     Disc,
+    reference_name,
+    save_reference,
 )
 from oiltank.cli.common import (
     CalibrationPath,
@@ -43,7 +47,6 @@ from oiltank.cli.common import (
     load_frames,
     tools,
     validation_message,
-    write_bytes,
     write_image,
 )
 from oiltank.model import Frame, Measurement
@@ -143,20 +146,19 @@ def _reference_name(frame: Frame, image: Path | None, calibration_path: Path) ->
     if image is not None and image.resolve().parent == calibration_path.parent.resolve():
         return Path(image.name)
     suffix = (image.suffix.lower() if image is not None else "") or ".jpg"
-    return Path(f"reference-{frame.ts.astimezone(UTC):%Y%m%d-%H%M%S}{suffix}")
+    return reference_name(frame.ts, suffix)
 
 
 def _save_reference(frame: Frame, name: Path, calibration_path: Path) -> None:
     """Write the frame's bytes, exactly as received, as the reference (unless it's there)."""
-    target = calibration_path.parent / name
-    if target.exists():
-        return
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        fail(f"cannot create {target.parent}: {e}")
     assert frame.data is not None
-    write_bytes(target, frame.data)
+    try:
+        save_reference(calibration_path.parent, name, frame.data)
+    except OSError as e:
+        hint = " (in the container, write under /data)" if e.errno == errno.EROFS else ""
+        fail(
+            f"cannot write the reference frame {calibration_path.parent / name}: {e.strerror}{hint}"
+        )
 
 
 def _report(
@@ -272,8 +274,7 @@ def _finish(
 
 
 def _note(text: str) -> str:
-    today = date.today().isoformat()
-    return f"{today}: {text}" if text else today
+    return dated_note(text, date.today())
 
 
 # ---- commands ----------------------------------------------------------------------------------

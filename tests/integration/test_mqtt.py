@@ -11,8 +11,9 @@ from pathlib import Path
 import pytest
 
 from oiltank.config import Settings
+from oiltank.events import Event, EventKind
 from oiltank.model import LevelState
-from oiltank.publish.mqtt import Event, EventKind, MqttError, MqttLink
+from oiltank.publish.mqtt import MqttError, MqttLink
 from tests.conftest import SAMPLE_CALIBRATION
 from tests.integration.conftest import Watcher, free_port
 

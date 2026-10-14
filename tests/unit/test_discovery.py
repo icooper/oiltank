@@ -68,6 +68,13 @@ def test_settings_flow_into_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     assert components["volume"]["unit_of_measurement"] == "L"
     assert components["usage_rate"]["unit_of_measurement"] == "L/d"
     assert components["level"]["unique_id"] == "garage_tank_level"
+    assert "configuration_url" not in payload["device"]
+
+
+def test_the_device_page_links_to_the_web_ui(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OILTANK_WEB_URL", "https://oiltank.example.com/")
+    payload = discovery_payload(Settings())
+    assert payload["device"]["configuration_url"] == "https://oiltank.example.com/"
 
 
 def test_state_payload_with_everything() -> None:

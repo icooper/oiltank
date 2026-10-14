@@ -1,6 +1,7 @@
 """``oiltank run``, ``healthcheck`` and ``history``: the service and its companions."""
 
 import json
+import logging
 import queue
 import signal
 import threading
@@ -13,7 +14,7 @@ import typer
 from pydantic import ValidationError
 
 from oiltank.archive import Archive, ArchivePolicy
-from oiltank.calibration import CalibrationError
+from oiltank.calibration import Calibration, CalibrationError
 from oiltank.cli.common import (
     CalibrationPath,
     calibration_file,
@@ -21,12 +22,18 @@ from oiltank.cli.common import (
     load_settings,
     validation_message,
 )
+from oiltank.events import Event, EventKind
 from oiltank.filter import FilterParams, LevelFilter
 from oiltank.history import History
-from oiltank.publish.mqtt import Event, EventKind, MqttError, MqttLink
+from oiltank.publish.mqtt import MqttError, MqttLink
 from oiltank.service import HEALTHY_AGE_S, Service
 from oiltank.sources.base import CameraConfigError
 from oiltank.sources.http import HttpSource
+from oiltank.web.app import create_app
+from oiltank.web.control import ServiceControl
+from oiltank.web.server import WebError, WebServer
+
+log = logging.getLogger(__name__)
 
 
 def run(calibration_path: CalibrationPath = None) -> None:
@@ -57,6 +64,18 @@ def run(calibration_path: CalibrationPath = None) -> None:
     except ValidationError as e:
         fail(f"invalid calibration {path}: {validation_message(e)}")
 
+    web = None
+    if settings.web.port:
+        app = create_app(
+            ServiceControl(service, events), settings, read_only=settings.web.read_only
+        )
+        web = WebServer(app, settings.web.host, settings.web.port)
+        try:
+            web.start()
+        except WebError as e:
+            fail(str(e))
+        log.info("web UI on http://%s:%d/", settings.web.host, settings.web.port)
+
     stop = threading.Event()
 
     def request_stop(signum: int, frame: FrameType | None) -> None:
@@ -69,6 +88,8 @@ def run(calibration_path: CalibrationPath = None) -> None:
     try:
         service.run(stop)
     finally:
+        if web is not None:
+            web.stop()
         source.close()
         history.close()
 
@@ -100,18 +121,38 @@ def healthcheck(
 
 def history(
     days: Annotated[float, typer.Option(min=0, help="How far back to show.")] = 2.0,
+    calibration_path: CalibrationPath = None,
 ) -> None:
-    """Show recent readings and refills from the service's history, and what they add up to."""
+    """Show recent readings and refills from the service's history, and what they add up to.
+
+    Levels are worked out with the current calibration, as the service would."""
     settings = load_settings()
     path = settings.data_dir / "oiltank.db"
     if not path.exists():
         fail(f"no history at {path} yet (the service creates it)")
     tank = settings.tank
     params = FilterParams.from_settings(settings.service)
+    cal_path = calibration_file(calibration_path)
+    calibration: Calibration | None = None
+    try:
+        calibration = Calibration.load(cal_path)
+    except CalibrationError as e:
+        typer.echo(f"note: levels as stored ({e})")
+    except ValidationError as e:
+        typer.echo(
+            f"note: levels as stored (invalid calibration {cal_path}: {validation_message(e)})"
+        )
     with History(path) as h:
         now = datetime.now(UTC)
         since = now - timedelta(days=max(days, params.usage_window_days + 1))
-        observations = h.observations(since)
+        if calibration is None:
+            observations = h.observations(since)
+        else:
+            # Where the service would map the readings, without changing what it has stored.
+            onto, _ = h.epoch_for(calibration.reference_image.as_posix(), calibration.axis)
+            observations = [
+                o.recalibrated(calibration.fraction) for o in h.observations(since, onto=onto)
+            ]
         f = LevelFilter(params, tank.capacity, tank.reserve, last_fill=h.last_fill(since))
         f.replay(observations)
         shown = [o for o in observations if o.ts >= now - timedelta(days=days)]

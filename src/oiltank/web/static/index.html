@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Oil Tank</title>
+<link rel="icon" href="{{static}}/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{static}}/app.css">
+<script type="module" src="{{static}}/js/main.js"></script>
+</head>
+<body>
+<header class="bar">
+  <h1>Oil Tank</h1>
+  <nav class="tabs" aria-label="Views">
+    <a href="#view=now" data-view="now">Now</a>
+    <a href="#view=history" data-view="history">History</a>
+    <a href="#view=calibration" data-view="calibration">Calibration</a>
+    <a href="#view=gauge" data-view="gauge">Gauge</a>
+  </nav>
+  <span id="service" class="chip" role="status">Connecting…</span>
+</header>
+<p id="page-error" class="banner page-error" role="alert" hidden></p>
+
+<main id="view-now" class="view">
+  <p id="problem" class="banner" role="alert" hidden></p>
+  <section class="card level" aria-labelledby="level-heading">
+    <div class="reading">
+      <h2 id="level-heading" class="label">Level</h2>
+      <p class="big"><span id="level">—</span></p>
+      <p id="volume" class="muted">—</p>
+      <div class="meter" aria-hidden="true"><div id="meter-fill"></div></div>
+      <dl class="facts">
+        <div><dt>Usage</dt><dd id="usage">—</dd></div>
+        <div><dt>Days left</dt><dd id="days-left">—</dd></div>
+        <div><dt>Last fill</dt><dd id="last-fill">—</dd></div>
+        <div><dt>Confidence</dt><dd id="confidence">—</dd></div>
+      </dl>
+    </div>
+    <figure class="gauge">
+      <img id="gauge" alt="The gauge as last read, with the indicator marked" hidden>
+      <figcaption id="gauge-caption" class="muted">No reading yet.</figcaption>
+    </figure>
+  </section>
+  <section class="card actions" aria-label="Service">
+    <button id="read-now" type="button">Read now</button>
+    <p id="schedule" class="muted"></p>
+    <p id="archive" class="muted"></p>
+  </section>
+</main>
+
+<main id="view-history" class="view" hidden>
+  <section class="card history" aria-label="Readings over time">
+    <div class="toolbar">
+      <div class="group" role="group" aria-label="Time range">
+        <button type="button" class="quiet" data-range="1d">Day</button>
+        <button type="button" class="quiet" data-range="7d">Week</button>
+        <button type="button" class="quiet" data-range="30d">Month</button>
+        <button type="button" class="quiet" data-range="90d">3 months</button>
+        <button type="button" class="quiet" data-range="1y">Year</button>
+      </div>
+      <div class="group" role="group" aria-label="Move">
+        <button type="button" class="quiet" id="pan-back" aria-label="Earlier">‹</button>
+        <button type="button" class="quiet" id="pan-now">Latest</button>
+        <button type="button" class="quiet" id="pan-fwd" aria-label="Later">›</button>
+      </div>
+      <div class="group playback" role="group" aria-label="Play">
+        <button type="button" class="quiet" id="play" aria-pressed="false">Play</button>
+        <label class="visually-hidden" for="speed">Speed</label>
+        <select id="speed">
+          <option value="2">2/s</option>
+          <option value="5" selected>5/s</option>
+          <option value="10">10/s</option>
+          <option value="25">25/s</option>
+        </select>
+      </div>
+      <div class="group jumps" role="group" aria-label="Jump">
+        <button type="button" class="quiet" id="prev-event" aria-label="Previous">‹</button>
+        <label class="visually-hidden" for="jump-kind">Jump to</label>
+        <select id="jump-kind">
+          <option value="problem">Problems</option>
+          <option value="rejected">Rejected readings</option>
+          <option value="fill">Refills</option>
+        </select>
+        <button type="button" class="quiet" id="next-event" aria-label="Next">›</button>
+      </div>
+    </div>
+    <div id="plots" class="plots" tabindex="0"
+         aria-label="Level and gauge over time. Arrow keys step through readings; Shift steps a day; Space plays.">
+      <canvas id="chart"></canvas>
+      <canvas id="strips"></canvas>
+      <canvas id="overlay" class="overlay"></canvas>
+    </div>
+    <p id="history-status" class="muted status" role="status"></p>
+    <p class="hint muted">Drag to scrub · ←/→ one reading · Shift+←/→ a day · Space plays · [ ] jump · wheel or pinch to zoom</p>
+  </section>
+  <section id="inspector" class="card inspector" aria-label="The reading under the cursor">
+    <figure class="strip-view">
+      <canvas id="strip"></canvas>
+      <figcaption class="muted">The strip: the gauge's marks (dashed), where the reader put the disc (blue), each frame of the burst (dots) and the reader's score per row (right).</figcaption>
+    </figure>
+    <figure class="frame-view">
+      <canvas id="frame"></canvas>
+      <figcaption id="frame-caption" class="muted"></figcaption>
+    </figure>
+    <div class="reading-side">
+      <dl id="reading-facts" class="facts"></dl>
+      <form id="point-form" class="point-form" hidden>
+        <label>This reading was
+          <input id="point-level" type="number" min="0" max="100" step="0.1" required> %</label>
+        <input id="point-note" type="text" placeholder="How you know (optional)" aria-label="Note">
+        <button type="submit" class="quiet">Add as a calibration point</button>
+        <p id="point-message" class="muted" role="status"></p>
+      </form>
+    </div>
+  </section>
+</main>
+
+<main id="view-calibration" class="view" hidden>
+  <section class="card" aria-labelledby="points-heading">
+    <h2 id="points-heading">Calibration points</h2>
+    <p class="muted">Each point says what the gauge reads with the disc at one position; the scale
+      runs straight between them. With fewer than two, the bottom of travel stands in for E (or the
+      top for F). To set where the gauge reads full or empty, drag F or E along the gauge in the
+      <a href="#view=gauge">Gauge</a> tab: that adds a 100% or 0% point here.</p>
+    <p id="cal-read-only" class="muted" hidden>This web UI is read-only (OILTANK_WEB_READ_ONLY).</p>
+    <ul id="cal-warnings" class="warnings" hidden></ul>
+    <table class="points">
+      <thead><tr><th scope="col">Reading</th><th scope="col">Position</th><th scope="col">Note</th><th scope="col"><span class="visually-hidden">Remove</span></th></tr></thead>
+      <tbody id="points-body"></tbody>
+    </table>
+    <p id="points-empty" class="muted" hidden>No points yet.</p>
+    <p id="points-message" class="muted" role="status"></p>
+    <p class="muted">To add a point from a reading you trust, find it under
+      <a href="#view=history">History</a> and use “This reading was” beside it.</p>
+  </section>
+  <section id="delivery-card" class="card" aria-labelledby="delivery-heading">
+    <h2 id="delivery-heading">From a delivery</h2>
+    <p class="muted">The level before a refill plus the amount on the delivery ticket is what the
+      gauge should have read afterwards.</p>
+    <p id="no-fills" class="muted" hidden>No refills in the history yet.</p>
+    <form id="delivery-form" class="row-form">
+      <label>Refill <select id="fill-select"></select></label>
+      <label>Delivered <span class="with-unit"><input id="delivered" type="number" min="0"
+        step="0.1" required> <span id="delivered-unit">gal</span></span></label>
+      <label>Note <input id="delivery-note" type="text" placeholder="e.g. ticket 4411"></label>
+      <button type="submit" class="quiet">Add a point</button>
+    </form>
+    <p id="delivery-message" class="muted" role="status"></p>
+  </section>
+  <section class="card" aria-labelledby="preview-heading">
+    <h2 id="preview-heading">The last 30 days</h2>
+    <p class="muted">With your changes; the dashed grey line is the level as it is now.</p>
+    <div id="preview-plot" class="plots"><canvas id="preview-chart"></canvas></div>
+    <p id="preview-message" class="muted status" role="status"></p>
+  </section>
+</main>
+
+<main id="view-gauge" class="view" hidden>
+  <section class="card gauge" aria-labelledby="gauge-heading">
+    <h2 id="gauge-heading">Where the gauge is</h2>
+    <p class="muted">The axis the disc travels (top of travel to bottom), the strip around it the
+      reader looks in, the disc's size, and the anchor: a patch of the scene that doesn't change,
+      which tells how far the camera has moved. Each change is checked against the frame shown.</p>
+    <div id="g-state" class="g-state" role="status">
+      <span id="g-state-text"></span>
+      <button type="button" class="quiet" id="g-reset" hidden>Back to saved</button>
+    </div>
+    <div class="toolbar">
+      <label class="group">Frame <select id="g-frame"></select></label>
+      <button type="button" class="quiet" id="g-grab" hidden>Grab from the camera</button>
+      <button type="button" class="quiet" id="g-fit">Fit to the gauge</button>
+    </div>
+    <div class="gauge-layout">
+      <div class="gauge-main">
+        <div class="g-frame">
+          <div id="g-stage" class="stage"><canvas id="g-canvas"
+            aria-label="The frame, with the gauge's axis, strip, marks and anchor. Drag the handles to change them."></canvas></div>
+          <p class="hint muted">Drag the round handles to move the axis ends or widen the strip,
+            the pink ones to move or resize the anchor, and the F and E tabs (left of their marks)
+            to set where the gauge reads full and empty. Scroll or pinch to zoom, drag elsewhere
+            to pan, double-click to fit.</p>
+        </div>
+        <figure class="g-strip">
+          <canvas id="g-strip" aria-label="The strip the reader gets from this frame, with its score for every row"></canvas>
+          <figcaption class="muted">The strip the reader gets from this frame with these
+            settings: the gauge's marks (dashed), where it put the disc (blue), and its score
+            for every row (right). It picks the highest.</figcaption>
+        </figure>
+      </div>
+      <div class="gauge-side">
+        <div id="g-result" class="g-result" role="status" aria-live="polite"></div>
+        <details open>
+          <summary>Numbers</summary>
+          <form id="g-form" class="g-form">
+            <fieldset><legend>Axis top (x, y)</legend><input id="g-top-x" type="number" step="0.5"><input id="g-top-y" type="number" step="0.5"></fieldset>
+            <fieldset><legend>Axis bottom (x, y)</legend><input id="g-bottom-x" type="number" step="0.5"><input id="g-bottom-y" type="number" step="0.5"></fieldset>
+            <fieldset><legend>F, E: position along the axis</legend><input id="g-full" type="number" step="0.001" aria-label="F, position along the axis"><input id="g-empty" type="number" step="0.001" aria-label="E, position along the axis"></fieldset>
+            <div class="g-ends muted">
+              <div id="g-ends"></div>
+              <p>In the same units as the reading's position: 0 at the axis bottom, 1 at its top.</p>
+            </div>
+            <fieldset><legend>Strip half-width, margin</legend><input id="g-half" type="number" step="1" min="1"><input id="g-margin" type="number" step="0.05" min="0" max="1"></fieldset>
+            <fieldset><legend>Disc (width, height)</legend><input id="g-disc-w" type="number" step="1" min="1"><input id="g-disc-h" type="number" step="1" min="1"></fieldset>
+            <fieldset><legend>Anchor (x, y, width, height)</legend><input id="g-anchor-x" type="number" step="1"><input id="g-anchor-y" type="number" step="1"><input id="g-anchor-w" type="number" step="1" min="16"><input id="g-anchor-h" type="number" step="1" min="16"></fieldset>
+            <fieldset><legend>Anchor search (px), least match</legend><input id="g-search" type="number" step="1" min="1"><input id="g-min-score" type="number" step="0.05" min="0" max="1"></fieldset>
+          </form>
+        </details>
+        <details>
+          <summary>Disc size</summary>
+          <p class="muted">A disc size that's a little off can lock onto a highlight instead of the
+            disc. The scan reads the frame with sizes around yours and shows which agree.</p>
+          <button type="button" class="quiet" id="g-scan">Scan disc sizes</button>
+          <canvas id="g-heatmap"></canvas>
+          <p id="g-scan-text" class="muted" role="status"></p>
+        </details>
+        <section id="g-rebase" class="g-rebase" hidden>
+          <h3>Has the camera moved?</h3>
+          <p class="muted">If this frame is from after the camera was bumped, it can become the
+            reference: the gauge's geometry moves with the camera.</p>
+          <button type="button" class="quiet" id="g-rebase-find">Find the camera's shift</button>
+          <p id="g-rebase-text" role="status"></p>
+          <button type="button" id="g-rebase-save" hidden>Make this frame the reference (saves now)</button>
+        </section>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="draft-bar" class="draft-bar" role="region" aria-label="Unsaved calibration changes" hidden>
+  <span>You have unsaved changes to the calibration.</span>
+  <label class="check"><input type="checkbox" id="read-after" checked> Take a reading after saving</label>
+  <button type="button" id="draft-save">Save</button>
+  <button type="button" class="quiet" id="draft-discard">Discard</button>
+  <a href="#view=calibration">Review</a>
+  <p id="draft-message" role="status"></p>
+</div>
+</body>
+</html>

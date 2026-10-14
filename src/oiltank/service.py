@@ -1,7 +1,9 @@
 """The long-running service: read the gauge on a schedule and on Read now, filter, store, publish.
 
 One thread does all the work. The MQTT link's callbacks only put events on the queue this loop
-waits on, so readings (slow CV) never run in paho's network thread.
+waits on, so readings (slow CV) never run in paho's network thread. Other threads (the web UI)
+read :attr:`Service.snapshot` and change things through :meth:`Service.call`, which runs on this
+thread between readings.
 """
 
 import hashlib
@@ -12,6 +14,8 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -20,17 +24,26 @@ from pydantic import ValidationError
 
 from oiltank.annotate import encode_jpeg, render
 from oiltank.archive import Archive
-from oiltank.calibration import Calibration, CalibrationError, ResolutionMismatch
+from oiltank.calibration import (
+    Calibration,
+    CalibrationError,
+    ResolutionMismatch,
+    calibration_etag,
+    save_reference,
+)
 from oiltank.config import Settings
+from oiltank.epochs import AxisEpoch, Change
+from oiltank.events import Event, EventKind
 from oiltank.filter import FilterParams, LevelFilter, Observation
 from oiltank.geometry import Aligner
 from oiltank.history import History
 from oiltank.model import Frame, LevelState, Measurement, Problem
 from oiltank.pipeline import measure
 from oiltank.publish.discovery import Topics
-from oiltank.publish.mqtt import Event, EventKind, MqttError
+from oiltank.publish.mqtt import MqttError
 from oiltank.readers import GaugeReader, ReaderConfig, build_reader
 from oiltank.sources.base import CameraError, FrameSource
+from oiltank.sources.files import FrameDecodeError
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +51,46 @@ HEARTBEAT_S = 30.0
 """The loop wakes, and refreshes the heartbeat file, at least this often."""
 HEALTHY_AGE_S = 120.0
 """A heartbeat older than this means the loop is stuck (used by ``oiltank healthcheck``)."""
+CALL_TIMEOUT_S = 90.0
+"""How long :meth:`Service.call` waits for its turn: a reading with camera retries can take about
+a minute."""
+
+
+class ServiceBusyError(Exception):
+    """A call didn't get its turn on the service thread in time. It will never run."""
+
+
+class ServiceStoppedError(Exception):
+    """The service stopped before a call could run."""
+
+
+class CalibrationConflictError(Exception):
+    """The calibration file changed after the edit was started (e.g. by ``oiltank calibrate``)."""
+
+    def __init__(self, etag: str) -> None:
+        super().__init__("the calibration has changed since it was read")
+        self.etag = etag
+        """The file's tag now."""
+
+
+@dataclass(frozen=True, slots=True)
+class Snapshot:
+    """The service as other threads see it. It's replaced whole, never changed in place."""
+
+    calibration: Calibration
+    calibration_etag: str
+    """:func:`~oiltank.calibration.calibration_etag` of the file the calibration was loaded from."""
+    epoch: AxisEpoch
+    state: LevelState | None
+    image: bytes | None
+    """The last published gauge image (JPEG)."""
+    reading: bool
+    """A reading is in progress."""
+    next_reading: datetime | None
+    """When the next scheduled reading is due (None until the loop runs)."""
+    mqtt_connected: bool
+    archive_bytes: int | None
+    """None until the first reading is archived."""
 
 
 class Publisher(Protocol):
@@ -87,18 +140,50 @@ class Service:
         self._state: LevelState | None = None
         self._image: bytes | None = None
         self._last_digests: set[bytes] = set()
+        self._reading = False
+        self._next_reading: datetime | None = None
+        self._archive_bytes: int | None = None
+        self._stopping = False
         self._load_calibration()
         self._filter = self._replay()
+        self._refresh()
+
+    @property
+    def calibration_path(self) -> Path:
+        return self._calibration_path
 
     # ---- calibration and history ---------------------------------------------------------------
 
     def _load_calibration(self) -> None:
-        calibration = Calibration.load(self._calibration_path)
+        path = self._calibration_path
+        try:
+            mtime = path.stat().st_mtime_ns  # first, so an edit made while loading is seen later
+        except OSError as e:
+            raise CalibrationError(f"cannot read calibration {path}: {e}") from e
+        etag = calibration_etag(path)
+        calibration = Calibration.load(path)
         aligner = Aligner(calibration.anchor, calibration.anchor_patch)
-        self._reader: GaugeReader = build_reader(ReaderConfig(), calibration)
+        reader = build_reader(ReaderConfig(), calibration)
+        epoch, change = self._history.register_epoch(
+            calibration.reference_image.as_posix(), calibration.axis, self._clock()
+        )
+        self._reader: GaugeReader = reader
         self._calibration = calibration
         self._aligner = aligner
-        self._calibration_mtime = self._calibration_path.stat().st_mtime_ns
+        self._calibration_mtime = mtime
+        self._calibration_etag = etag
+        self._epoch = epoch
+        match change:
+            case Change.AXIS_EDIT:
+                log.info("the gauge axis changed; stored readings are mapped onto the new one")
+            case Change.REBASE:
+                log.info("the calibration was rebased; stored readings keep their gauge positions")
+            case Change.NEW_REFERENCE:
+                log.warning(
+                    "the reference frame changed and the gauge axis didn't just move with the "
+                    "camera, so stored readings can't be mapped onto it; levels from before may "
+                    "be off"
+                )
 
     def _reload_if_changed(self) -> None:
         """Pick up calibration edits (e.g. `calibrate point` run alongside the service)."""
@@ -126,7 +211,7 @@ class Service:
         f = LevelFilter(
             self._params, tank.capacity, tank.reserve, last_fill=self._history.last_fill(since)
         )
-        observations = self._history.observations(since)
+        observations = self._history.observations(since, onto=self._epoch)
         f.replay(o.recalibrated(self._calibration.fraction) for o in observations)
         if observations:
             self._state = f.state(observations[-1].ts)
@@ -134,8 +219,50 @@ class Service:
 
     # ---- one reading ---------------------------------------------------------------------------
 
+    def apply_calibration(
+        self, calibration: Calibration, *, if_match: str, reference: bytes | None = None
+    ) -> Snapshot:
+        """Save ``calibration`` as the calibration file and switch to it now: reload, replay the
+        history with it and publish the result. Call it through :meth:`call`.
+
+        ``if_match`` is the tag of the file the change was made to. ``reference`` is a new
+        reference frame's bytes, written to ``calibration.reference_image`` first (a rebase).
+        Raises CalibrationConflictError if the file has changed since, and CalibrationError if
+        the reference frame can't be used (the calibration isn't saved then).
+        """
+        current = calibration_etag(self._calibration_path)
+        if current != if_match:
+            raise CalibrationConflictError(current)
+        if reference is not None:
+            try:
+                save_reference(
+                    self._calibration_path.parent, calibration.reference_image, reference
+                )
+            except OSError as e:
+                raise CalibrationError(f"cannot write the reference frame: {e}") from e
+        try:
+            Aligner(calibration.anchor, calibration.anchor_patch)  # the reference must be usable
+        except (OSError, FrameDecodeError) as e:
+            raise CalibrationError(f"cannot use the reference frame: {e}") from e
+        calibration.save(self._calibration_path)
+        self._load_calibration()
+        log.info("calibration saved; reloaded it and replayed history with it")
+        self._filter = self._replay()
+        self._publish(image=False)  # the image changes at the next reading
+        self._refresh()
+        return self.snapshot
+
     def cycle(self) -> LevelState:
         """Take a reading, filter it, store it and publish the result."""
+        self._reading = True
+        self._refresh()
+        try:
+            return self._cycle()
+        finally:
+            self._reading = False
+            self._refresh()
+
+    def _cycle(self) -> LevelState:
         self._reload_if_changed()
         camera = self._settings.camera
         frames: list[Frame] = []
@@ -159,6 +286,7 @@ class Service:
                 self._archive.record(m, frames, self._calibration)
             except OSError as e:
                 log.error("couldn't archive the reading: %s", e)
+            self._archive_bytes = self._archive.size()
         now = frames[-1].ts if frames else self._clock()
         if m is not None:
             obs = Observation(m.ts, m.fraction if m.ok else None, m.confidence, m.t, m.problem)
@@ -167,7 +295,7 @@ class Service:
             obs = Observation(now, None, 0.0, None, problem)
 
         update = self._filter.update(obs)
-        self._history.add(obs, accepted=update.accepted, frames=len(frames))
+        self._history.add(obs, accepted=update.accepted, frames=len(frames), epoch=self._epoch)
         if update.fill is not None:
             self._history.add_fill(update.fill)
             log.info(
@@ -231,6 +359,19 @@ class Service:
             return
         self._publish()
 
+    def _refresh(self) -> None:
+        self.snapshot = Snapshot(
+            calibration=self._calibration,
+            calibration_etag=self._calibration_etag,
+            epoch=self._epoch,
+            state=self._state,
+            image=self._image,
+            reading=self._reading,
+            next_reading=self._next_reading,
+            mqtt_connected=self._publisher.connected,
+            archive_bytes=self._archive_bytes,
+        )
+
     def _beat(self) -> None:
         payload = {
             "ts": self._clock().isoformat(timespec="seconds"),
@@ -261,6 +402,9 @@ class Service:
         try:
             while not stop.is_set():
                 self._beat()
+                due_in = max(0.0, next_reading - self._monotonic())
+                self._next_reading = self._clock() + timedelta(seconds=due_in)
+                self._refresh()
                 deadline = min(next_reading, republish_at or next_reading)
                 timeout = max(0.0, min(deadline - self._monotonic(), HEARTBEAT_S))
                 try:
@@ -278,6 +422,8 @@ class Service:
                             self._publish()  # whatever we couldn't publish while disconnected
                         case EventKind.HA_ONLINE:
                             republish_at = self._monotonic() + self._republish_delay()
+                        case EventKind.CALL if event.task is not None:
+                            event.task()
                 now = self._monotonic()
                 if republish_at is not None and now >= republish_at:
                     republish_at = None
@@ -291,4 +437,48 @@ class Service:
                     next_reading = self._monotonic() + interval
         finally:
             log.info("stopping")
+            self._stopping = True
+            self._fail_waiting_calls()
             self._publisher.stop()
+
+    # ---- calls from other threads --------------------------------------------------------------
+
+    def call[T](self, fn: Callable[[Service], T], timeout: float = CALL_TIMEOUT_S) -> T:
+        """Run ``fn(service)`` on the service thread, between readings, and return its result.
+
+        For other threads: the service's state only ever changes on its own thread. Raises
+        ServiceBusyError if ``fn`` doesn't get its turn within ``timeout`` (it then never runs),
+        ServiceStoppedError if the service stops first, and whatever ``fn`` raises.
+        """
+        if self._stopping:
+            raise ServiceStoppedError("the service is stopping")
+        future: Future[T] = Future()
+
+        def task() -> None:
+            if not future.set_running_or_notify_cancel():
+                return  # the caller gave up: don't make a change it was told didn't happen
+            if self._stopping:
+                future.set_exception(ServiceStoppedError("the service stopped"))
+                return
+            try:
+                future.set_result(fn(self))
+            except Exception as e:
+                future.set_exception(e)
+
+        self._events.put(Event(EventKind.CALL, task))
+        try:
+            return future.result(timeout)
+        except TimeoutError:
+            if future.cancel():
+                raise ServiceBusyError(f"the service was busy for {timeout:g} s") from None
+            return future.result()  # it got its turn just as time ran out
+
+    def _fail_waiting_calls(self) -> None:
+        """Tell calls still on the queue that the service has stopped."""
+        while True:
+            try:
+                event = self._events.get_nowait()
+            except queue.Empty:
+                return
+            if event.kind is EventKind.CALL and event.task is not None:
+                event.task()  # fails its caller: _stopping is set

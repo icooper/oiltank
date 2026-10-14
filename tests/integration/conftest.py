@@ -3,6 +3,7 @@
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -10,6 +11,8 @@ from collections.abc import Callable, Iterator
 import paho.mqtt.client as mqtt
 import pytest
 from paho.mqtt.enums import CallbackAPIVersion
+from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
 
 from oiltank.config import Settings
 
@@ -20,6 +23,35 @@ def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])
+
+
+def _mqtt_ready(port: int, timeout: float = 2.0) -> bool:
+    """A whole MQTT handshake works. A TCP connection isn't enough: Docker's port proxy accepts
+    those before Mosquitto is listening, and then drops them."""
+    connected = threading.Event()
+
+    def on_connect(
+        client: mqtt.Client,
+        userdata: object,
+        flags: mqtt.ConnectFlags,
+        reason_code: ReasonCode,
+        properties: Properties | None,
+    ) -> None:
+        if not reason_code.is_failure:
+            connected.set()
+
+    client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id=f"probe-{uuid.uuid4().hex[:6]}")
+    client.on_connect = on_connect
+    try:
+        client.connect("127.0.0.1", port, keepalive=5)
+    except OSError:
+        return False
+    client.loop_start()
+    try:
+        return connected.wait(timeout)
+    finally:
+        client.disconnect()
+        client.loop_stop()
 
 
 @pytest.fixture(scope="module")
@@ -49,14 +81,10 @@ def broker(tmp_path_factory: pytest.TempPathFactory) -> Iterator[int]:
     )
     try:
         deadline = time.monotonic() + 20
-        while True:
-            try:
-                socket.create_connection(("127.0.0.1", port), timeout=1).close()
-                break
-            except OSError:
-                if time.monotonic() > deadline:
-                    raise
-                time.sleep(0.2)
+        while not _mqtt_ready(port):
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"Mosquitto ({IMAGE}) didn't start")
+            time.sleep(0.2)
         yield port
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
@@ -80,9 +108,34 @@ class Watcher:
             CallbackAPIVersion.VERSION2, client_id=f"w-{uuid.uuid4().hex[:6]}"
         )
         self.client.on_message = self._on_message
+        self.client.on_connect = self._on_connect
+        self.client.on_subscribe = self._on_subscribe
+        self._subscribed = threading.Event()
         self.client.connect("127.0.0.1", port)
-        self.client.subscribe("#", qos=1)
         self.client.loop_start()
+        if not self._subscribed.wait(10):
+            raise AssertionError("the watcher couldn't subscribe")
+
+    def _on_connect(
+        self,
+        client: mqtt.Client,
+        userdata: object,
+        flags: mqtt.ConnectFlags,
+        reason_code: ReasonCode,
+        properties: Properties | None,
+    ) -> None:
+        if not reason_code.is_failure:
+            client.subscribe("#", qos=1)  # on every connect: a reconnect starts unsubscribed
+
+    def _on_subscribe(
+        self,
+        client: mqtt.Client,
+        userdata: object,
+        mid: int,
+        reason_codes: list[ReasonCode],
+        properties: Properties | None,
+    ) -> None:
+        self._subscribed.set()
 
     def _on_message(self, client: mqtt.Client, userdata: object, msg: mqtt.MQTTMessage) -> None:
         self.messages[msg.topic] = msg

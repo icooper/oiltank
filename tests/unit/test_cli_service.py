@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -7,9 +8,11 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from oiltank.calibration import Calibration
 from oiltank.cli import app
 from oiltank.filter import Fill, Observation
 from oiltank.history import History
+from tests.conftest import SAMPLE_CALIBRATION
 
 runner = CliRunner()
 
@@ -51,9 +54,28 @@ def test_history(data: Path) -> None:
     result = runner.invoke(app, ["history", "--days", "1"])
     assert result.exit_code == 0, result.output
     assert "4 readings stored; 4 in the last 1 day(s)" in result.stdout
+    assert "levels as stored" in result.stdout  # no calibration to work them out with
     assert "refill" in result.stdout
     assert "now: level 59.8%" in result.stdout
     assert "usage not enough data yet" in result.stdout
+
+
+def test_history_works_levels_out_with_the_current_calibration(data: Path) -> None:
+    shutil.copyfile(SAMPLE_CALIBRATION, data / "calibration.yaml")
+    owner_t = Calibration.load(SAMPLE_CALIBRATION).t_for(0.98)
+    now = datetime.now(UTC)
+    with History(data / "oiltank.db") as h:
+        for k in range(3):  # stored before the owner's 98% point was added
+            h.add(
+                Observation(now - timedelta(hours=3 - k), 0.5, 0.97, owner_t, None),
+                accepted=True,
+                frames=5,
+            )
+    result = runner.invoke(app, ["history", "--days", "1"])
+    assert result.exit_code == 0, result.output
+    assert "98.0%" in result.stdout
+    assert "now: level 98.0%" in result.stdout
+    assert "as stored" not in result.stdout
 
 
 def test_run_needs_a_calibration(data: Path, monkeypatch: pytest.MonkeyPatch) -> None:

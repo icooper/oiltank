@@ -26,10 +26,11 @@ from oiltank.cli.common import (
     tools,
 )
 from oiltank.config import Settings
+from oiltank.events import Event, EventKind
 from oiltank.model import LevelState, Problem
 from oiltank.pipeline import measure
 from oiltank.publish.discovery import state_from_measurement
-from oiltank.publish.mqtt import Event, EventKind, MqttError, MqttLink
+from oiltank.publish.mqtt import MqttError, MqttLink
 from oiltank.sources.base import CameraError
 from oiltank.sources.http import HttpSource
 
